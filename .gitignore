@@ -1,0 +1,11 @@
+vendor/
+node_modules/
+generated/
+var/
+.DS_Store
+.idea/
+.vscode/
+*.log
+.phpunit.result.cache
+.phpcs-cache
+.phpstan-cache

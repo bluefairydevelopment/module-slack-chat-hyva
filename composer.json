@@ -1,0 +1,23 @@
+{
+    "name": "bluefairy/module-slack-chat-hyva",
+    "description": "BlueFairy Slack Live Chat — Hyva/Alpine.js frontend widget for the core module.",
+    "type": "magento2-module",
+    "license": [
+        "proprietary"
+    ],
+    "require": {
+        "php": "^8.1|^8.2|^8.3",
+        "bluefairy/module-slack-chat": "^1.0"
+    },
+    "suggest": {
+        "hyva-themes/magento2-default-theme": "Recommended: Hyva base theme"
+    },
+    "autoload": {
+        "files": [
+            "registration.php"
+        ],
+        "psr-4": {
+            "BlueFairy\\SlackChatHyva\\": ""
+        }
+    }
+}
