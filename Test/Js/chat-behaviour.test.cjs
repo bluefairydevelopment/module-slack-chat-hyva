@@ -47,7 +47,8 @@ const I18N = {
     deliveryPending: 'Sending to our team…', retry: 'Retry', download: 'Download',
     ended: 'This conversation has ended.', rateLimited: 'Too fast', unavailable: 'Unavailable',
     tooLarge: 'Too large', typeNotAllowed: 'Type not allowed', uploadsOff: 'Uploads off',
-    fileEmpty: 'The file is empty.', unread: '%1 unread', genericError: 'Oops',
+    fileEmpty: 'The file is empty.', unread: '%1 unread', genericError: 'Oops', networkError: 'Offline?',
+    newConversation: 'Your previous conversation had ended, so this message started a new one.',
     notDeliveredRetrying: 'Not delivered yet. We will keep trying for about 48 minutes.', notDelivered: 'Not delivered.',
     uploadLimit: 'Upload limit reached', uploadQuota: 'Upload quota reached', storageFull: 'Storage full',
 };
@@ -99,8 +100,12 @@ function setup(routes, options = {}) {
             const p = url.slice(REST.length);
             const body = init && init.body ? JSON.parse(init.body) : null;
             calls.push({ path: p, body, method: init.method, headers: init.headers });
-            const [status, json] = await routes(p, body, init.method);
-            return { ok: status >= 200 && status < 300, status, text: async () => (json === null ? '' : JSON.stringify(json)) };
+            const [status, json, headers = {}] = await routes(p, body, init.method);
+            return {
+                ok: status >= 200 && status < 300, status,
+                headers: { get: (k) => (k in headers ? headers[k] : null) },
+                text: async () => (json === null || json === undefined ? '' : JSON.stringify(json)),
+            };
         },
     };
     const document = {
@@ -127,12 +132,13 @@ function setup(routes, options = {}) {
         storeId: 1, storeCode: 'default', productId: 4, categoryId: null, cmsPageId: null,
         uploadsEnabled: true, maxUploadBytes: 1000, allowedMimeTypes: ['image/png'], i18n: I18N,
     }, options.config || {})) } };
-    c.$refs = {};
+    const focused = [];
+    c.$refs = { input: { focus() { focused.push('input'); } } };
     c.$nextTick = (fn) => fn();
     c.init();
 
     return {
-        c, store, calls, sources, fetched, timers, document, window,
+        c, store, calls, sources, fetched, timers, document, window, focused,
         paths: () => calls.map((x) => x.path),
         intervalMs: () => [...timers.intervals.values()].map((x) => x.ms),
         timeoutMs: () => [...timers.timeouts.values()].map((x) => x.ms),
@@ -522,32 +528,35 @@ test('a status change re-sent over the stream redraws the message; delivered is 
 
 /* -------------------------------------------------- stream endings */
 
-test('event: idle closes the stream for good until a send, a reopen or the tab is shown', async () => {
+test('event: idle closes the stream; the open panel polls every 60 s until a send, a reopen or the tab is shown', async () => {
     const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? [200, out(9, body.body)] : items()), { token: TOKEN });
     h.c.open();
     await settle();
     h.sources[0].listeners.idle({});
     await settle();
     assert.equal(h.sources[0].closed, true, 'an idle stream was left open');
-    assert.deepEqual(h.intervalMs(), [], 'an idle conversation is polled');
+    assert.deepEqual(h.intervalMs(), [60000], 'D5: an idle open panel does not poll every 60 s');
     assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [], 'an idle stream is scheduled to reconnect');
     assert.equal(h.sources.length, 1);
 
     await sendText(h, 'back again');
     assert.equal(h.sources.length, 2, 'a send did not reconnect the idle stream');
+    assert.deepEqual(h.intervalMs(), [], 'the idle poll outlived the reconnect');
 
     h.sources[1].listeners.idle({});
     await settle();
     h.c.close();
     await settle();
-    assert.deepEqual(h.intervalMs(), [], 'a closed panel polls an idle conversation');
+    assert.deepEqual(h.intervalMs(), [30000], 'D5: the closed-panel 30 s poll stopped for an idle conversation');
     h.c.open();
     await settle();
     assert.equal(h.sources.length, 3, 'a reopen did not reconnect');
+    assert.deepEqual(h.intervalMs(), []);
 
     h.sources[2].listeners.idle({});
     await settle();
     await h.setHidden(true);
+    assert.deepEqual(h.intervalMs(), [], 'a hidden tab polls');
     await h.setHidden(false);
     assert.equal(h.sources.length, 4, 'showing the tab did not reconnect');
 });
@@ -584,17 +593,24 @@ test('an ending from a stream that is no longer current is ignored', async () =>
 
 /* ----------------------------------------------- upload refusals */
 
-test('upload refusals are explained by their error code; a 500 is generic', async () => {
+test('upload refusals (D6): own label by code, server words for a module 4xx, status wording otherwise, a 5xx generic', async () => {
     const cases = [
         [413, 'bfslc_upload_limit', 'Not sent: Upload limit reached'],
         [429, 'bfslc_upload_quota', 'Not sent: Upload quota reached'],
         [503, 'bfslc_storage_full', 'Not sent: Storage full'],
         [500, 'bfslc_unavailable', 'Not sent: Oops'],
-        [413, 'bfslc_other', 'Not sent: Too large'],
-        [429, 'bfslc_rate_limited', 'Not sent: Too fast'],
+        [413, 'bfslc_file_too_large', 'Not sent: x'],
+        [413, null, 'Not sent: Too large'],
+        [429, 'bfslc_rate_limited', 'Not sent: x'],
+        [429, null, 'Not sent: Too fast'],
+        [400, 'bfslc_bad_mime', 'Not sent: x'],
+        [400, null, 'Not sent: Oops'],
+        [403, null, 'Not sent: Uploads off'],
+        [503, null, 'Not sent: Unavailable'],
     ];
     for (const [status, code, label] of cases) {
-        const h = setup((p) => (p === 'session' ? active(TOKEN) : p === 'upload' ? [status, { message: 'x', parameters: { error_code: code } }] : items()), {
+        const body = code === null ? { message: 'x' } : { message: 'x', parameters: { error_code: code } };
+        const h = setup((p) => (p === 'session' ? active(TOKEN) : p === 'upload' ? [status, body] : items()), {
             FileReader: class { readAsDataURL() { this.result = 'data:image/png;base64,AAAA'; this.onload(); } },
         });
         h.c.onFileChosen({ target: { files: [{ name: 'a.png', type: 'image/png', size: 10 }], value: 'x' } });
@@ -684,4 +700,265 @@ test('a failed message without a retrying field is taken as still retrying: no R
     assert.equal(unknown.canRetry, false, 'a message of unknown retry state offers a duplicating resend');
     assert.deepEqual(h.timeoutMs(), [30000], 'a message of unknown retry state is not re-fetched');
     assert.equal(lost.canRetry, true, 'CONTROL: an explicit retrying=false does offer Retry');
+});
+
+/* ------------------------------ cure round 2: parity with Luma (D5, D6) */
+
+test('W2: an ended conversation forgets only its own token, not one another tab stored since', async () => {
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : items()), { token: TOKEN });
+    h.c.open();
+    await settle();
+    h.store.bfslc_token_default = TOKEN2;
+    h.sources[0].listeners.closed({});
+    await settle();
+    assert.equal(h.c.token, '', 'CONTROL: this tab\'s conversation ended');
+    assert.equal(h.store.bfslc_token_default, TOKEN2, 'another tab\'s newer conversation was erased');
+
+    const k = setup((p) => (p === 'session/status' ? active(TOKEN) : items()), { token: TOKEN });
+    k.c.open();
+    await settle();
+    k.sources[0].listeners.closed({});
+    await settle();
+    assert.equal('bfslc_token_default' in k.store, false, 'CONTROL: its own token is forgotten');
+});
+
+test('W5: a reconnect after idle that an older server refuses with 204 stays on the 60 s idle poll', async () => {
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : items()), { token: TOKEN });
+    h.c.open();
+    await settle();
+    h.sources[0].listeners.idle({});
+    await settle();
+    h.c.close();
+    await settle();
+    h.c.open();
+    await settle();
+    assert.equal(h.sources.length, 2, 'CONTROL: reopening tries the stream');
+    h.sources[1].readyState = 2;
+    h.sources[1].onerror();
+    await settle();
+    assert.deepEqual(h.intervalMs(), [60000], 'a 204 after idle fell back to 3 s polling');
+    assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [], 'a 204 after idle schedules a stream retry');
+
+    await h.setHidden(true);
+    await h.setHidden(false);
+    assert.equal(h.sources.length, 3);
+    h.sources[2].listeners.open({});
+    h.sources[2].readyState = 2;
+    h.sources[2].onerror();
+    await settle();
+    assert.deepEqual(h.intervalMs(), [3000], 'CONTROL: a stream that opened and then failed is the 3 s fallback');
+    assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [60000]);
+});
+
+test('D5: a reconnect answered with 200 + event: idle stays on the 60 s poll', async () => {
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : items()), { token: TOKEN });
+    h.c.open();
+    await settle();
+    h.sources[0].listeners.idle({});
+    await settle();
+    await h.setHidden(true);
+    await h.setHidden(false);
+    assert.equal(h.sources.length, 2);
+    h.sources[1].listeners.open({});
+    h.sources[1].listeners.idle({});
+    await settle();
+    assert.equal(h.sources[1].closed, true);
+    assert.deepEqual(h.intervalMs(), [60000]);
+});
+
+test('D5: an idle poll that finds a new message leaves idle and reopens the stream after it', async () => {
+    let next = items();
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? next : [500, null]), { token: TOKEN });
+    h.c.open();
+    await settle();
+    h.sources[0].listeners.idle({});
+    await settle();
+    await h.tick();
+    assert.equal(h.sources.length, 1, 'a quiet poll reopened the stream');
+    next = items(inbound(12, 'agent is back'));
+    await h.tick();
+    assert.equal(h.c.messages[0].body, 'agent is back');
+    assert.equal(h.sources.length, 2, 'the agent answered, but the stream stayed shut');
+    assert.match(h.sources[1].url, /&after=12$/);
+    assert.deepEqual(h.intervalMs(), []);
+});
+
+test('W6: a superseded tab takes the stream back when the visitor sends from it', async () => {
+    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? [200, out(8, body.body)] : items()), { token: TOKEN });
+    h.c.open();
+    await settle();
+    h.sources[0].listeners.superseded({});
+    await settle();
+    assert.deepEqual(h.intervalMs(), [30000], 'CONTROL: superseded polls slowly');
+    await sendText(h, 'here');
+    assert.equal(h.sources.length, 2, 'the tab the visitor is typing in never retook the stream');
+    assert.equal(h.sources[1].closed, false);
+    assert.deepEqual(h.intervalMs(), []);
+});
+
+for (const ending of ['expired', 'reconnecting']) {
+    test(ending + ': a stream that ran is reconnected at once; one that ended at once falls back', async () => {
+        const h = setup((p) => (p === 'session/status' ? active(TOKEN) : items(inbound(4, 'x'))), { token: TOKEN });
+        h.c.open();
+        await settle();
+        const realNow = Date.now;
+        let now = realNow();
+        Date.now = () => now;
+        try {
+            h.sources[0].listeners.open({});
+            now += 300000;
+            h.sources[0].listeners[ending]({});
+            await settle();
+            assert.equal(h.sources[0].closed, true);
+            assert.equal(h.sources.length, 2, 'an expired stream was not reconnected');
+            assert.match(h.sources[1].url, /&after=4$/);
+            assert.deepEqual(h.intervalMs(), []);
+            h.sources[1].listeners.open({});
+            now += 2000;
+            h.sources[1].listeners[ending]({});
+            await settle();
+            assert.equal(h.sources.length, 2, 'a stream that expires at once is hammered');
+            assert.deepEqual(h.intervalMs(), [3000]);
+            assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [60000]);
+        } finally {
+            Date.now = realNow;
+        }
+    });
+}
+
+test('W3/D6: a refused email shows the server\'s words, keeps the intro fields, and Retry uses the fix', async () => {
+    const h = setup((p, body) => (p === 'availability/0' ? [200, {}]
+        : p === 'session' ? (body.email === 'jane@example.com' ? active(TOKEN)
+            : [400, { message: 'Please enter a valid email address.', parameters: { error_code: 'bfslc_invalid_email' } }])
+            : p === 'message' ? [200, out(10, body.body)] : items()));
+    h.c.open();
+    await settle();
+    h.c.email = 'jane@exämple.de';
+    await sendText(h, 'hello');
+    const msg = h.c.messages[0];
+    assert.equal(msg.statusLabel, 'Not sent: Please enter a valid email address.', 'a refused email reads as a generic error');
+    assert.equal(msg.canRetry, true);
+    assert.equal(h.c.needsIntro, true, 'the email field went away, so it cannot be fixed');
+    h.c.email = 'jane@example.com';
+    h.focused.length = 0;
+    h.c.message = msg;
+    h.c.retry();
+    await settle();
+    assert.deepEqual(h.calls.filter((x) => x.path === 'session').map((x) => x.body.email), ['jane@exämple.de', 'jane@example.com']);
+    assert.equal(h.c.messages[0].id, 10);
+    assert.deepEqual(h.focused, ['input'], 'W10: Retry hid under focus and focus was not moved');
+});
+
+test('W9/D6: a refused text message - 5xx never in the server\'s words, a bare 4xx in the widget\'s, no answer is a connection problem', async () => {
+    const cases = [
+        [[500, { message: 'SQLSTATE[42S02]: Base table or view not found' }], 'Not sent: Oops'],
+        [[500, { message: 'SQLSTATE[HY000] leaked', parameters: { error_code: 'bfslc_unavailable' } }], 'Not sent: Oops'],
+        [[400, { message: '"sessionToken" is required.', parameters: { fieldName: 'sessionToken' } }], 'Not sent: Oops'],
+        [[400, { message: 'Please type a message.', parameters: { error_code: 'bfslc_empty_body' } }], 'Not sent: Please type a message.'],
+        [[0, null], 'Not sent: Offline?'],
+    ];
+    for (const [answer, label] of cases) {
+        const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? answer : items()), { token: TOKEN });
+        h.c.open();
+        await settle();
+        await sendText(h, 'x');
+        assert.equal(h.c.messages[0].statusLabel, label, JSON.stringify(answer));
+        assert.equal(h.c.messages[0].canRetry, true, 'CONTROL: a retry is offered');
+    }
+});
+
+test('D6: a 410 resend says where the new conversation started, before the message', async () => {
+    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'session' ? active(TOKEN2)
+        : p === 'message' ? (body.sessionToken === TOKEN ? [410, { message: 'ended', parameters: { error_code: 'bfslc_session_closed' } }] : [200, out(20, body.body)])
+            : items(inbound(3, 'old'))), { token: TOKEN });
+    h.c.open();
+    await settle();
+    await sendText(h, 'again');
+    assert.deepEqual(h.c.messages.map((m) => m.body), ['old', 'Your previous conversation had ended, so this message started a new one.', 'again']);
+    assert.equal(h.c.messages[1].direction, 'system');
+    assert.equal(h.c.messages[2].id, 20);
+    assert.equal(h.store.bfslc_token_default, TOKEN2);
+});
+
+test('W7: a message resent after a 410 still offers Retry once the server later gives up on it', async () => {
+    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'session' ? active(TOKEN2)
+        : p === 'message' ? (body.sessionToken === TOKEN ? [410, { message: 'ended' }] : [200, out(21, body.body, 'pending')])
+            : items()), { token: TOKEN });
+    h.c.open();
+    await settle();
+    await sendText(h, 'again');
+    const msg = h.c.messages.find((m) => m.id === 21);
+    assert.ok(msg, 'CONTROL: the resend went through');
+    h.sources[h.sources.length - 1].listeners.message({ data: JSON.stringify(Object.assign(out(21, 'again', 'failed'), { retrying: false })) });
+    assert.equal(msg.statusLabel, 'Not delivered.');
+    assert.equal(msg.canRetry, true, 'the 410 resend used up the Retry the docblock promises');
+});
+
+test('W13: no Retry for a refusal that cannot change; a 429 Retry-After keeps Retry disabled that long', async () => {
+    const reader = class { readAsDataURL() { this.result = 'data:image/png;base64,AAAA'; this.onload(); } };
+    const h = setup((p) => (p === 'session' ? active(TOKEN) : p === 'upload' ? [413, { message: 'x', parameters: { error_code: 'bfslc_upload_limit' } }] : items()), { FileReader: reader });
+    h.c.onFileChosen({ target: { files: [{ name: 'a.png', type: 'image/png', size: 10 }], value: 'x' } });
+    await settle();
+    assert.equal(h.c.messages[0].statusLabel, 'Not sent: Upload limit reached', 'CONTROL: the refusal is the file limit');
+    assert.equal(h.c.messages[0].canRetry, false, 'Retry offered on the conversation\'s file limit');
+
+    let n = 0;
+    const k = setup((p, body) => (p === 'session/status' ? active(TOKEN)
+        : p === 'message' ? (++n === 1 ? [429, { message: 'Wait.', parameters: { error_code: 'bfslc_rate_limited' } }, { 'Retry-After': '30' }] : [200, out(30, body.body)])
+            : items()), { token: TOKEN });
+    k.c.open();
+    await settle();
+    await sendText(k, 'x');
+    const msg = k.c.messages[0];
+    assert.equal(msg.canRetry, true);
+    assert.equal(msg.retryWaiting, true, 'Retry is clickable before the server said it can work');
+    k.c.message = msg;
+    k.c.retry();
+    await settle();
+    assert.equal(k.calls.filter((x) => x.path === 'message').length, 1, 'a waiting Retry sent');
+    assert.deepEqual(k.timeoutMs().filter((ms) => ms === 30000), [30000]);
+    await k.fireTimeouts(30000);
+    assert.equal(msg.retryWaiting, false);
+    k.c.retry();
+    await settle();
+    assert.equal(k.c.messages[0].id, 30);
+});
+
+test('W10: sending moves focus back to the message box; End chat too once it hides', async () => {
+    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? [200, out(5, body.body)]
+        : p === 'session/close' ? [200, true] : items()), { token: TOKEN });
+    h.c.open();
+    await settle();
+    h.focused.length = 0;
+    await sendText(h, 'x');
+    assert.deepEqual(h.focused, ['input'], 'Send turns disabled under focus and focus was not moved');
+    h.focused.length = 0;
+    h.c.endChat();
+    await settle();
+    assert.equal(h.c.hasSession, false, 'CONTROL: End chat is hidden now');
+    assert.deepEqual(h.focused, ['input']);
+});
+
+test('W10: the log is aria-busy while the transcript loads', async () => {
+    let release;
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN)
+        : p === 'messages' ? new Promise((r) => { release = () => r(items(inbound(1, 'hi'))); }) : [500, null]), { token: TOKEN });
+    assert.equal(h.c.logBusy, 'false');
+    h.c.open();
+    await settle();
+    assert.equal(typeof release, 'function', 'CONTROL: the history request is held');
+    assert.equal(h.c.logBusy, 'true');
+    release();
+    await settle();
+    assert.equal(h.c.logBusy, 'false');
+    assert.equal(h.c.messages.length, 1);
+});
+
+test('an upload type is compared case-insensitively, as Luma does', async () => {
+    const reader = class { readAsDataURL() { this.result = 'data:image/png;base64,AAAA'; this.onload(); } };
+    const h = setup((p, body) => (p === 'session' ? active(TOKEN) : p === 'upload' ? [200, Object.assign(out(3, ''), { attachment_name: 'A.PNG' })] : items()), { FileReader: reader });
+    h.c.onFileChosen({ target: { files: [{ name: 'A.PNG', type: 'IMAGE/PNG', size: 10 }], value: 'x' } });
+    await settle();
+    assert.equal(h.c.notice, '', 'an upper-case type was refused');
+    assert.equal(h.calls.find((x) => x.path === 'upload').body.mimeType, 'image/png');
 });

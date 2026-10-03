@@ -213,6 +213,37 @@ class WidgetTemplateTest extends TestCase
         self::assertMatchesRegularExpression('#<span role="status" class="sr-only" x-text="unreadAnnouncement"></span>#', $html);
     }
 
+    /**
+     * Round-2 parity with the Luma widget (D6, W10, W11): the availability banner
+     * is a status region; the log is aria-busy while the transcript loads; the
+     * inputs are 16px (text-base - below that iOS zooms the page on focus) and
+     * take what the server takes (name 120, email 255); a Retry that a 429/503
+     * Retry-After holds back is disabled, not hidden.
+     */
+    public function testInputsAndLiveRegionsMatchTheLumaWidget(): void
+    {
+        $html = $this->render(true, self::boot());
+
+        self::assertSame(1, preg_match('#<p x-show="hasBanner"[^>]*>#', $html, $banner), 'CONTROL: the banner is rendered');
+        self::assertStringContainsString('role="status"', $banner[0], 'the availability banner is not announced');
+
+        self::assertSame(1, preg_match('#<div x-ref="log"[^>]*>#', $html, $log));
+        self::assertStringContainsString(':aria-busy="logBusy"', $log[0], 'the log is not marked busy while history loads');
+
+        foreach (['bfslc-name' => '120', 'bfslc-email' => '255'] as $id => $max) {
+            self::assertSame(1, preg_match('#<input id="' . $id . '"[^>]*>#', $html, $input), "CONTROL: #{$id} is rendered");
+            self::assertStringContainsString('maxlength="' . $max . '"', $input[0], "#{$id} does not take what the server takes");
+            self::assertContains('text-base', preg_split('/\s+/', (string) preg_replace('#.*class="([^"]*)".*#s', '$1', $input[0])) ?: []);
+            self::assertStringNotContainsString('text-sm', $input[0], "#{$id} is under 16px, so iOS zooms on focus");
+        }
+        self::assertSame(1, preg_match('#<textarea id="bfslc-message"[^>]*>#', $html, $textarea));
+        self::assertStringContainsString(' text-base"', $textarea[0]);
+        self::assertStringNotContainsString('text-sm', $textarea[0]);
+
+        self::assertSame(1, preg_match('#<button type="button"\s+x-show="message.canRetry"[^>]*>#', $html, $retry), 'CONTROL: the Retry button is rendered');
+        self::assertStringContainsString(':disabled="message.retryWaiting"', $retry[0]);
+    }
+
     public function testNoDirectiveInsertsHtmlOrAssigns(): void
     {
         $names = array_column(self::directives(), 0);

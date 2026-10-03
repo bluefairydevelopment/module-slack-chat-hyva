@@ -17,8 +17,14 @@
  *
  * Screen readers: the log announces new messages AND text changes in existing
  * ones (aria-relevant "additions text"), so a bubble turning to "Not sent" is
- * spoken. The unread count is in the bubble's accessible name and in a polite
+ * spoken, and is aria-busy while the transcript loads, so a hundred history
+ * messages are not read out one by one. The availability banner is a status
+ * region. The unread count is in the bubble's accessible name and in a polite
  * status region; the visual badge is aria-hidden so it is not read twice.
+ *
+ * Inputs are text-base (16px): below that iOS Safari zooms the page on focus.
+ * Their maxlength is the server's limit (name 120, email 255 -
+ * ChatSessionManagement), so nothing typed is silently cut.
  */
 
 declare(strict_types=1);
@@ -71,12 +77,13 @@ $json = (string) json_encode($bootConfig, JSON_UNESCAPED_SLASHES | JSON_UNESCAPE
             </div>
         </header>
 
-        <p x-show="hasBanner" x-text="bannerText" :class="bannerClass" data-bfslc-banner></p>
+        <p x-show="hasBanner" x-text="bannerText" :class="bannerClass" role="status" data-bfslc-banner></p>
 
         <div x-ref="log"
              role="log"
              aria-live="polite"
              aria-relevant="additions text"
+             :aria-busy="logBusy"
              class="flex-1 overflow-y-auto px-4 py-3 space-y-3">
             <p x-show="hasNoMessages" class="text-sm text-gray-600"><?= $escaper->escapeHtml($i18n['intro']) ?></p>
             <template x-for="message in messages" :key="message.key">
@@ -97,8 +104,9 @@ $json = (string) json_encode($bootConfig, JSON_UNESCAPED_SLASHES | JSON_UNESCAPE
                         <span x-text="message.statusLabel"></span>
                         <button type="button"
                                 x-show="message.canRetry"
+                                :disabled="message.retryWaiting"
                                 @click="retry"
-                                class="ml-2 underline font-semibold">
+                                class="ml-2 underline font-semibold disabled:opacity-50 disabled:cursor-not-allowed">
                             <?= $escaper->escapeHtml($i18n['retry']) ?>
                         </button>
                     </p>
@@ -114,18 +122,18 @@ $json = (string) json_encode($bootConfig, JSON_UNESCAPED_SLASHES | JSON_UNESCAPE
                 <input id="bfslc-name"
                        type="text"
                        autocomplete="name"
-                       maxlength="100"
+                       maxlength="120"
                        :value="displayName"
                        @input="onNameInput"
-                       class="w-full rounded border border-gray-300 px-2 py-1 text-sm">
+                       class="w-full rounded border border-gray-300 px-2 py-1 text-base">
                 <label for="bfslc-email" class="text-xs font-medium text-gray-700"><?= $escaper->escapeHtml($i18n['emailLabel']) ?></label>
                 <input id="bfslc-email"
                        type="email"
                        autocomplete="email"
-                       maxlength="254"
+                       maxlength="255"
                        :value="email"
                        @input="onEmailInput"
-                       class="w-full rounded border border-gray-300 px-2 py-1 text-sm">
+                       class="w-full rounded border border-gray-300 px-2 py-1 text-base">
             </div>
             <label for="bfslc-message" class="sr-only"><?= $escaper->escapeHtml($i18n['messageLabel']) ?></label>
             <textarea id="bfslc-message"
@@ -136,7 +144,7 @@ $json = (string) json_encode($bootConfig, JSON_UNESCAPED_SLASHES | JSON_UNESCAPE
                       :value="draft"
                       @input="onDraftInput"
                       @keydown.enter="onEnter"
-                      class="w-full resize-none rounded border border-gray-300 px-2 py-1 text-sm"></textarea>
+                      class="w-full resize-none rounded border border-gray-300 px-2 py-1 text-base"></textarea>
             <div class="flex items-center justify-between gap-2">
                 <div x-show="uploadsEnabled">
                     <input id="bfslc-file"

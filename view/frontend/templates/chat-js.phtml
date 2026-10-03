@@ -50,12 +50,21 @@
  * every tenth poll also asks for the conversation's status, because the
  * messages endpoint answers 200 for a closed conversation and would never say so.
  *
- * A STREAM CAN END FOR GOOD. `event: idle` (nothing said for 30 minutes; the
- * server answers a reconnect with 204) closes it with no reconnect and no polling
- * until the visitor sends, reopens the panel or shows the tab again.
- * `event: superseded` (another tab took this conversation's one stream slot)
- * closes it for the life of the page; this tab then polls every 30 seconds while
- * the panel is open rather than take the slot back and start a tug of war.
+ * A STREAM CAN END ON PURPOSE. `event: idle` (nothing said for 30 minutes)
+ * closes it; the open, visible panel then polls every 60 seconds instead (an agent
+ * may still answer), and the closed panel keeps its 30-second unread poll. The
+ * stream is tried again when the visitor sends, reopens the panel, shows the tab
+ * or a poll brings a new message. A reconnect the server answers with idle again -
+ * 200 + `event: idle`, or 204 from an older server (rt.wasIdle remembers that the
+ * attempt followed an idle) - goes back to the 60-second poll, not the 3-second
+ * fallback. `event: superseded` (another tab took this conversation's one stream
+ * slot) closes it; this tab then polls every 30 seconds rather than take the slot
+ * back and start a tug of war - until the visitor sends from it, which makes it
+ * the tab being talked in. `event: reconnecting` (the server's
+ * StreamRunner::EVENT_RECONNECTING: the stream's slot lease expired; `expired` is
+ * heard too, the name it was first briefed as) reconnects at once from the newest
+ * id held, unless the stream lived under 10 seconds, which is treated as a
+ * refusal (3-second poll, stream again in 60 seconds).
  *
  * DELIVERY STATUSES SETTLE LATER. The stream and the poll only bring new ids, but
  * the server retries a failed Slack post for about 48 minutes. So while one of the
@@ -63,13 +72,30 @@
  * the open, visible panel re-fetches from the lowest such id every 30 seconds;
  * "delivered" is final, and so is "failed" once the server says it is no longer
  * retrying (retrying === false; a message without the field is taken as still
- * retrying, so it never offers a resend that could reach Slack twice). Retry is offered on a message the store refused outright, and on a
- * text message the server has given up on (it is sent again as a new message);
- * never while the server is still retrying, or Slack would receive it twice.
+ * retrying, so it never offers a resend that could reach Slack twice).
+ *
+ * RETRY. Offered on a message the store refused outright, and on a text message
+ * the server has given up on (it is sent again as a new message); never while the
+ * server is still retrying, or Slack would receive it twice. Not offered where the
+ * same bytes cannot succeed (FINAL_REFUSALS: the conversation's file limit, a file
+ * too large, of a refused type or empty). After a 429 or 503 that said Retry-After
+ * it stays disabled for that many seconds. A send that meets an ended conversation
+ * (401/410) starts a new one and is resent once (goneRetried), with a note before
+ * it saying so; that resend is tracked apart from a given-up Retry (resent), so it
+ * never takes that Retry away.
+ *
+ * REFUSAL WORDING (the same rule as the Luma widget's refusalText): an upload
+ * refusal with its own label shows that label; no answer at all is a connection
+ * problem; a 5xx never shows the server's text (developer mode puts stack traces
+ * and SQL there) - "unavailable" for 503, the generic line otherwise; a 4xx with
+ * one of this module's bfslc_ error codes shows the server's own words (they say
+ * what to fix, e.g. bfslc_invalid_email); any other 4xx gets its status's wording.
  *
  * EVERY RESPONSE IS CHECKED AGAINST THE TOKEN IT WAS ASKED WITH. A response that
  * arrives after the conversation was ended or replaced is dropped, so a late
- * answer for the old conversation can neither end nor feed the new one.
+ * answer for the old conversation can neither end nor feed the new one. Likewise
+ * an ended conversation removes the stored token only if it is still its own
+ * (forgetStored compares first): another tab may have stored a newer one.
  *
  * Every class string returned below is a literal in this file, so the
  * view/frontend/tailwind/module.css @source glob reaches them.
@@ -99,10 +125,16 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
         bfslc_upload_quota: 'uploadQuota',
         bfslc_storage_full: 'storageFull'
     };
+    var STATUS_LABEL = { 401: 'ended', 410: 'ended', 403: 'uploadsOff', 413: 'tooLarge', 429: 'rateLimited' };
+    var FINAL_REFUSALS = ['bfslc_upload_limit', 'bfslc_file_too_large', 'bfslc_bad_mime', 'bfslc_file_empty'];
+    var OWN_ERROR_CODE = /^bfslc_[a-z_]+$/;
+    var MAX_RETRY_AFTER_S = 86400;
     var POLL_MS = 3000;
-    var IDLE_POLL_MS = 30000;
+    var SLOW_POLL_MS = 30000;
+    var IDLE_POLL_MS = 60000;
     var STATUS_EVERY_N_POLLS = 10;
     var STREAM_RETRY_MS = 60000;
+    var STREAM_HEALTHY_MS = 10000;
     var SETTLE_INTERVAL_MS = 30000;
     var SETTLE_WINDOW_MS = 60 * 60000;
     var HISTORY_PAGE = 200;
@@ -143,9 +175,11 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
         }
     }
 
-    function forgetStored(key) {
+    function forgetStored(key, token) {
         try {
-            window.localStorage.removeItem(key);
+            if (token !== '' && window.localStorage.getItem(key) === token) {
+                window.localStorage.removeItem(key);
+            }
         } catch (e) {
             return;
         }
@@ -164,6 +198,57 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
         return data && data.parameters && typeof data.parameters.error_code === 'string'
             ? data.parameters.error_code
             : '';
+    }
+
+    function errorMessage(data, fallback) {
+        if (!data || typeof data.message !== 'string' || data.message === '') {
+            return fallback;
+        }
+        var params = data.parameters;
+        return data.message.replace(/%(\d+)/g, function (match, index) {
+            var value;
+            if (Array.isArray(params)) {
+                value = params[Number(index) - 1];
+            } else if (params && typeof params === 'object') {
+                value = params[index];
+            }
+            return value === undefined || value === null ? match : String(value);
+        });
+    }
+
+    function refusalText(res, i18n) {
+        var status = res ? res.status : 0;
+        var data = res ? res.data : null;
+        var code = errorCode(data);
+        function label(key) {
+            return Object.prototype.hasOwnProperty.call(i18n, key) ? text(i18n[key]) : '';
+        }
+        if (Object.prototype.hasOwnProperty.call(REFUSAL_LABEL, code) && label(REFUSAL_LABEL[code]) !== '') {
+            return label(REFUSAL_LABEL[code]);
+        }
+        if (!(status > 0)) {
+            return label('networkError') || label('genericError');
+        }
+        if (status >= 500) {
+            return (status === 503 && label('unavailable')) || label('genericError');
+        }
+        var fallback = label(STATUS_LABEL[status] || 'genericError') || label('genericError');
+        if (status >= 400 && OWN_ERROR_CODE.test(code)) {
+            return errorMessage(data, fallback);
+        }
+        return fallback;
+    }
+
+    function retryAfterSeconds(value, now) {
+        var raw = text(value).trim();
+        var seconds = 0;
+        if (/^\d+$/.test(raw)) {
+            seconds = parseInt(raw, 10);
+        } else if (raw !== '') {
+            var date = Date.parse(raw);
+            seconds = isNaN(date) ? 0 : Math.ceil((date - now) / 1000);
+        }
+        return Math.max(0, Math.min(MAX_RETRY_AFTER_S, seconds));
     }
 
     function isGone(res) {
@@ -207,6 +292,13 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             init.body = JSON.stringify(payload);
         }
         return window.fetch(url, init).then(function (response) {
+            var header = null;
+            try {
+                header = response.headers && typeof response.headers.get === 'function'
+                    ? response.headers.get('Retry-After') : null;
+            } catch (e) {
+                header = null;
+            }
             return response.text().then(function (raw) {
                 var data = null;
                 try {
@@ -214,10 +306,15 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 } catch (e) {
                     data = null;
                 }
-                return { ok: response.ok, status: response.status, data: data };
+                return {
+                    ok: response.ok,
+                    status: response.status,
+                    data: data,
+                    retryAfter: retryAfterSeconds(header, Date.now())
+                };
             });
         }, function () {
-            return { ok: false, status: 0, data: null };
+            return { ok: false, status: 0, data: null, retryAfter: 0 };
         });
     }
 
@@ -257,6 +354,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             pollCount: 0,
             retryTimer: null,
             streamEnd: '',
+            wasIdle: false,
             unsettled: {},
             settleTimer: null,
             blobUrls: []
@@ -281,6 +379,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             unreadCount: 0,
             uploadsEnabled: false,
             acceptList: '',
+            historyLoading: false,
 
             init() {
                 var parsed = {};
@@ -360,6 +459,9 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             },
             get sendDisabled() {
                 return this.draft.trim() === '';
+            },
+            get logBusy() {
+                return this.historyLoading ? 'true' : 'false';
             },
 
             toggle() {
@@ -447,7 +549,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                         return null;
                     }
                     self.booted = false;
-                    self.notice = res.status === 503 ? t('unavailable') : t('genericError');
+                    self.notice = refusalText(res, rt.i18n);
                     return null;
                 });
             },
@@ -455,8 +557,12 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             catchUp(token) {
                 var self = this;
                 rt.historyToken = token;
+                this.historyLoading = true;
                 return this.loadHistory(token).then(function () {
+                    self.historyLoading = false;
                     self.syncRealtime();
+                }, function () {
+                    self.historyLoading = false;
                 });
             },
 
@@ -480,13 +586,14 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
 
             dropSession() {
                 this.stopRealtime();
-                forgetStored(rt.storageKey);
+                forgetStored(rt.storageKey, this.token);
                 this.token = '';
                 this.sessionStatus = '';
                 rt.historyToken = '';
                 rt.pollCount = 0;
                 rt.unsettled = {};
                 rt.streamEnd = '';
+                rt.wasIdle = false;
             },
 
             accepted(token) {
@@ -495,7 +602,8 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 }
                 this.booted = true;
                 this.sessionStatus = 'active';
-                this.wake();
+                rt.streamEnd = '';
+                rt.wasIdle = false;
                 if (rt.historyToken !== token) {
                     this.catchUp(token);
                 } else {
@@ -591,7 +699,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 var undelivered = msg.direction === 'outbound' && msg.deliveryStatus === 'failed';
                 var givenUp = undelivered && !msg.retrying;
                 msg.isFailed = msg.state === 'failed' || givenUp;
-                msg.canRetry = msg.state === 'failed'
+                msg.canRetry = (msg.state === 'failed' && !msg.noRetry)
                     || (givenUp && !msg.resent && msg.body !== '' && msg.attachmentUrl === '');
                 msg.canDownload = isAllowedAttachmentUrl(msg.attachmentUrl, rt.origins);
                 msg.hasAttachment = msg.attachmentName !== '' || msg.canDownload;
@@ -633,7 +741,10 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     retrying: false,
                     state: 'sending',
                     failReason: '',
-                    resent: false
+                    resent: false,
+                    goneRetried: false,
+                    noRetry: false,
+                    retryWaiting: false
                 });
             },
 
@@ -778,7 +889,10 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     retrying: false,
                     state: 'sent',
                     failReason: '',
-                    resent: false
+                    resent: false,
+                    goneRetried: false,
+                    noRetry: false,
+                    retryWaiting: false
                 }));
                 this.apply(this.byKey('m' + id), raw);
                 rt.seen[id] = 'm' + id;
@@ -825,31 +939,27 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 }
             },
 
-            fail(key, status, kind, data) {
+            fail(key, res) {
                 var msg = this.byKey(key);
                 if (!msg) {
                     return;
                 }
-                var reason = t('genericError');
-                var code = errorCode(data);
-                if (REFUSAL_LABEL[code] && t(REFUSAL_LABEL[code]) !== '') {
-                    reason = t(REFUSAL_LABEL[code]);
-                } else if (status === 429) {
-                    reason = t('rateLimited');
-                } else if (status === 503) {
-                    reason = t('unavailable');
-                } else if (status === 413) {
-                    reason = t('tooLarge');
-                } else if (status === 403) {
-                    reason = t('uploadsOff');
-                } else if (status === 400 && kind === 'file') {
-                    reason = t('typeNotAllowed');
-                } else if (SESSION_GONE.indexOf(status) !== -1) {
-                    reason = t('ended');
-                }
+                var wait = res.status === 429 || res.status === 503 ? res.retryAfter || 0 : 0;
                 msg.state = 'failed';
-                msg.failReason = reason;
+                msg.failReason = refusalText(res, rt.i18n);
+                msg.noRetry = FINAL_REFUSALS.indexOf(errorCode(res.data)) !== -1;
+                msg.retryWaiting = wait > 0;
                 this.decorate(msg);
+                if (wait > 0) {
+                    var self = this;
+                    window.setTimeout(function () {
+                        var current = self.byKey(key);
+                        if (current) {
+                            current.retryWaiting = false;
+                            self.decorate(current);
+                        }
+                    }, wait * 1000);
+                }
             },
 
             send() {
@@ -863,6 +973,16 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 this.messages.push(msg);
                 this.enqueue(msg.key);
                 this.scrollLog();
+                this.focusInput();
+            },
+
+            focusInput() {
+                var self = this;
+                this.$nextTick(function () {
+                    if (self.isOpen && self.$refs.input) {
+                        self.$refs.input.focus();
+                    }
+                });
             },
 
             onFileChosen(event) {
@@ -886,7 +1006,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     return;
                 }
                 var allowed = rt.config.allowedMimeTypes || [];
-                if (allowed.length > 0 && allowed.indexOf(file.type) === -1) {
+                if (allowed.length > 0 && allowed.indexOf(text(file.type).toLowerCase()) === -1) {
                     this.notice = t('typeNotAllowed');
                     return;
                 }
@@ -899,9 +1019,10 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
 
             retry() {
                 var msg = this.byKey(this.message.key);
-                if (!msg || !msg.canRetry) {
+                if (!msg || !msg.canRetry || msg.retryWaiting) {
                     return;
                 }
+                this.focusInput();
                 if (msg.state !== 'failed') {
                     msg.resent = true;
                     this.decorate(msg);
@@ -911,7 +1032,8 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     this.scrollLog();
                     return;
                 }
-                msg.resent = false;
+                msg.goneRetried = false;
+                msg.noRetry = false;
                 msg.state = 'sending';
                 msg.failReason = '';
                 this.decorate(msg);
@@ -921,13 +1043,49 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             enqueue(key) {
                 var self = this;
                 rt.chain = rt.chain.then(function () {
-                    return self.deliver(key);
+                    return self.deliver(key, false);
                 }).catch(function () {
-                    self.fail(key, 0, 'text');
+                    self.fail(key, { ok: false, status: 0, data: null, retryAfter: 0 });
                 });
             },
 
-            deliver(key) {
+            note(body) {
+                rt.seq += 1;
+                return this.decorate({
+                    key: 'n' + rt.seq,
+                    id: 0,
+                    kind: 'text',
+                    direction: 'system',
+                    authorLabel: t('system'),
+                    body: body,
+                    attachmentUrl: '',
+                    attachmentName: '',
+                    deliveryStatus: '',
+                    retrying: false,
+                    state: 'sent',
+                    failReason: '',
+                    resent: false,
+                    goneRetried: false,
+                    noRetry: false,
+                    retryWaiting: false
+                });
+            },
+
+            noteBefore(key, body) {
+                var at = -1;
+                for (var i = 0; i < this.messages.length; i++) {
+                    if (this.messages[i].key === key) {
+                        at = i;
+                    }
+                }
+                if (at === -1) {
+                    this.messages.push(this.note(body));
+                } else {
+                    this.messages.splice(at, 0, this.note(body));
+                }
+            },
+
+            deliver(key, afterGone) {
                 var self = this;
                 var used = '';
                 if (!this.byKey(key)) {
@@ -935,9 +1093,12 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 }
                 return this.ensureSession().then(function (token) {
                     used = token;
+                    if (afterGone) {
+                        self.noteBefore(key, t('newConversation'));
+                    }
                     return self.post(key, token);
                 }, function (res) {
-                    return res && typeof res.status === 'number' ? res : { ok: false, status: 0, data: null };
+                    return res && typeof res.status === 'number' ? res : { ok: false, status: 0, data: null, retryAfter: 0 };
                 }).then(function (res) {
                     var current = self.byKey(key);
                     if (!current) {
@@ -952,14 +1113,12 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                         if (used !== '' && self.token === used) {
                             self.dropSession();
                         }
-                        if (!current.resent) {
-                            current.resent = true;
-                            return self.deliver(key);
+                        if (!current.goneRetried) {
+                            current.goneRetried = true;
+                            return self.deliver(key, true);
                         }
-                        self.fail(key, 410, current.kind);
-                        return null;
                     }
-                    self.fail(key, res.status, current.kind, res.data);
+                    self.fail(key, res);
                     return null;
                 });
             },
@@ -980,11 +1139,11 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     return request('POST', root + 'upload', {
                         sessionToken: token,
                         filename: text(entry.file.name),
-                        mimeType: text(entry.file.type) || 'application/octet-stream',
+                        mimeType: text(entry.file.type).toLowerCase() || 'application/octet-stream',
                         content: content
                     });
                 }, function () {
-                    return { ok: false, status: 0, data: null };
+                    return { ok: false, status: 0, data: null, retryAfter: 0 };
                 });
             },
 
@@ -1034,36 +1193,16 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     }
                     if (res.ok || isGone(res)) {
                         self.conversationEnded();
+                        self.focusInput();
                         return;
                     }
-                    if (res.status === 429) {
-                        self.notice = t('rateLimited');
-                    } else if (res.status === 503) {
-                        self.notice = t('unavailable');
-                    } else {
-                        self.notice = t('genericError');
-                    }
+                    self.notice = refusalText(res, rt.i18n);
                 });
             },
 
             conversationEnded() {
                 this.dropSession();
-                rt.seq += 1;
-                this.messages.push(this.decorate({
-                    key: 'e' + rt.seq,
-                    id: 0,
-                    kind: 'text',
-                    direction: 'system',
-                    authorLabel: t('system'),
-                    body: t('ended'),
-                    attachmentUrl: '',
-                    attachmentName: '',
-                    deliveryStatus: '',
-                    retrying: false,
-                    state: 'sent',
-                    failReason: '',
-                    resent: false
-                }));
+                this.messages.push(this.note(t('ended')));
                 this.scrollLog();
             },
 
@@ -1076,24 +1215,20 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     this.stopStream();
                     this.clearStreamRetry();
                     this.stopSettle();
-                    if (rt.streamEnd === 'idle') {
-                        this.stopPolling();
-                    } else {
-                        this.startPolling(IDLE_POLL_MS);
-                    }
+                    this.startPolling(SLOW_POLL_MS);
                     return;
                 }
                 this.scheduleSettle();
                 if (rt.streamEnd === 'idle') {
                     this.stopStream();
-                    this.stopPolling();
                     this.clearStreamRetry();
+                    this.startPolling(IDLE_POLL_MS);
                     return;
                 }
                 if (rt.streamEnd === 'superseded') {
                     this.stopStream();
                     this.clearStreamRetry();
-                    this.startPolling(IDLE_POLL_MS);
+                    this.startPolling(SLOW_POLL_MS);
                     return;
                 }
                 if (rt.es !== null || (rt.pollTimer !== null && rt.pollMs === POLL_MS)) {
@@ -1114,10 +1249,17 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 var url = base + (base.indexOf('?') === -1 ? '?' : '&')
                     + 'token=' + encodeURIComponent(token) + '&after=' + rt.lastId;
                 var source = new window.EventSource(url);
+                var openedAt = 0;
                 rt.es = source;
                 function current() {
                     return rt.es === source && self.token === token;
                 }
+                source.addEventListener('open', function () {
+                    if (current()) {
+                        openedAt = Date.now();
+                        rt.wasIdle = false;
+                    }
+                });
                 source.addEventListener('message', function (event) {
                     if (!current()) {
                         return;
@@ -1146,11 +1288,30 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                         }
                     });
                 });
+                ['expired', 'reconnecting'].forEach(function (ending) {
+                    source.addEventListener(ending, function () {
+                        if (!current()) {
+                            return;
+                        }
+                        self.stopStream();
+                        if (openedAt > 0 && Date.now() - openedAt >= STREAM_HEALTHY_MS) {
+                            self.syncRealtime();
+                            return;
+                        }
+                        self.startPolling(POLL_MS);
+                        self.scheduleStreamRetry();
+                    });
+                });
                 source.onerror = function () {
                     if (!current() || source.readyState !== window.EventSource.CLOSED) {
                         return;
                     }
                     self.stopStream();
+                    if (openedAt === 0 && rt.wasIdle) {
+                        rt.streamEnd = 'idle';
+                        self.syncRealtime();
+                        return;
+                    }
                     self.startPolling(POLL_MS);
                     self.scheduleStreamRetry();
                 };
@@ -1192,6 +1353,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             poll() {
                 var self = this;
                 var token = this.token;
+                var before = rt.lastId;
                 if (rt.pollBusy || token === '') {
                     return;
                 }
@@ -1213,6 +1375,12 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     (res.data.items || []).forEach(function (item) {
                         self.receive(item);
                     });
+                    if (rt.streamEnd === 'idle' && rt.lastId > before && self.isOpen && !document.hidden) {
+                        rt.streamEnd = '';
+                        rt.wasIdle = false;
+                        self.stopPolling();
+                        self.syncRealtime();
+                    }
                     rt.pollCount += 1;
                     return rt.pollCount % STATUS_EVERY_N_POLLS === 0 ? self.checkStatus(token) : null;
                 }).then(function () {
@@ -1258,6 +1426,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             wake() {
                 if (rt.streamEnd === 'idle') {
                     rt.streamEnd = '';
+                    rt.wasIdle = true;
                 }
             },
 

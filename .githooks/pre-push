@@ -11,9 +11,20 @@
 #   2. A TAG push must pass this package's own gates FIRST, and every tag pushed
 #      must name HEAD with a clean working tree - the gates read the working tree,
 #      and a tag on any other commit would publish bytes nobody measured.
-#      composer validate, phpunit, phpcs and phpstan run against the tree being
-#      tagged and ANY non-zero exit refuses the push (M2MAP-546: a tag is a release,
-#      and no release is cut over a red gate). Exit codes are read, never output.
+#      composer validate, the JavaScript suite (node --test), phpunit, phpcs and
+#      phpstan run against the tree being tagged and ANY non-zero exit refuses the
+#      push (M2MAP-546: a tag is a release, and no release is cut over a red gate).
+#      Exit codes are read, never output.
+#
+# THE JAVASCRIPT GATE (review round 2, U7) runs Test/Js/*.test.cjs, the widget's
+# behaviour suite, which no other gate ran. It runs second, before the PHP gates:
+# it takes seconds, so a red widget refuses the tag before minutes of phpunit and
+# phpstan. node is given the FILES, never the directory: Node 22+ treats
+# `node --test Test/Js/` as one module to load and fails it ("Cannot find module"),
+# which would refuse every tag; and a pattern that matches nothing runs zero tests
+# and exits 0, which would pass every tag. So the hook lists the files itself and
+# refuses an empty list. BFSLC_WIDGET_JS / BFSLC_CHAT_JS (the suites' overrides
+# for the file under test) are unset, so the gate measures this tree's widget.
 #
 # INSTALL: this file is tracked. One line per clone, once:
 #
@@ -167,6 +178,22 @@ if [ -n "$tags_pushed" ]; then
     }
 
     gate composer-validate composer validate --no-check-publish --quiet
+
+    js_tests=(Test/Js/*.test.cjs)
+    if [ ! -f "${js_tests[0]}" ]; then
+        echo "" >&2
+        echo "  Tag push refused: no Test/Js/*.test.cjs files in this tree, so the JavaScript" >&2
+        echo "  gate would measure nothing and pass." >&2
+        echo "" >&2
+        exit 1
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        echo "" >&2
+        echo "  Tag push refused: node is not on PATH, so the JavaScript suite cannot run." >&2
+        echo "" >&2
+        exit 1
+    fi
+    gate node-test env -u BFSLC_WIDGET_JS -u BFSLC_CHAT_JS node --test "${js_tests[@]}"
     gate phpunit env MAGENTO_ROOT="$MAGENTO_ROOT" "$MAGENTO_ROOT/vendor/bin/phpunit" -c phpunit.xml.dist
     gate phpcs "$MAGENTO_ROOT/vendor/bin/phpcs" --standard=phpcs.xml.dist -q
     gate phpstan env MAGENTO_ROOT="$MAGENTO_ROOT" TMPDIR="$stan_tmp" "$MAGENTO_ROOT/vendor/bin/phpstan" analyse -c phpstan.neon.dist --no-progress --memory-limit=2G

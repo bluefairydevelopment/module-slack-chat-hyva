@@ -76,7 +76,7 @@ class TheReleaseGateIsArmedTest extends TestCase
     {
         $code = self::executableLines((string) file_get_contents(self::hookPath()));
         self::assertStringContainsString('refs/tags/', $code);
-        foreach (['phpunit', 'phpcs', 'phpstan', 'composer validate'] as $gate) {
+        foreach (['phpunit', 'phpcs', 'phpstan', 'composer validate', 'node --test'] as $gate) {
             self::assertMatchesRegularExpression(
                 '/^\s*gate \S+ .*' . preg_quote($gate, '/') . '/m',
                 $code,

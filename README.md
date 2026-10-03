@@ -18,6 +18,42 @@ only renders the widget on Hyvä store views, and replaces the base package's Lu
 
 ## Install
 
+### 1. Add the Private Packagist repository
+
+The BlueFairy Slack Live Chat packages are distributed **exclusively through Private
+Packagist**. They are not on public Packagist, so `composer require` cannot find them until the
+repository and your credentials are configured. Run this first, once per Magento install, in the
+project root:
+
+```bash
+composer config repositories.bluefairy composer \
+    https://bluefairy.repo.packagist.com/<your-repository-slug>/
+composer config --auth http-basic.bluefairy.repo.packagist.com \
+    <your-username> <your-password>
+```
+
+`composer config --auth` writes `auth.json` in the project root. If you prefer to create it by
+hand, it takes this shape:
+
+```json
+{
+    "http-basic": {
+        "bluefairy.repo.packagist.com": {
+            "username": "<your-username>",
+            "password": "<your-password>"
+        }
+    }
+}
+```
+
+Your repository slug, username and password are in the credentials email sent with your
+purchase. Keep `auth.json` out of version control.
+
+### 2. Require and enable the package
+
+`composer require` brings in `bluefairy/module-slack-chat` as well. Set that package up (Slack
+app, credentials, channel) as its README describes; this one adds only the storefront widget.
+
 ```bash
 composer require bluefairy/module-slack-chat-hyva
 bin/magento module:enable BlueFairy_SlackChatHyva
@@ -96,18 +132,41 @@ always inserted as text, never as HTML.
   every 30 seconds (for at most 60 minutes, never while closed or hidden) until it settles.
   Such a message offers no Retry: the store is already retrying, and a second copy would reach
   Slack twice. Retry is offered on a message the store refused outright ("Not sent"), and on a
-  text message the store has given up on ("Not delivered."), which is sent again as a new one.
-- **A stream can end for good.** After 30 minutes with nothing said the store ends the stream
-  (`idle`) and the widget does not reconnect until the visitor sends, reopens the panel or
-  returns to the tab. If the same conversation is open in another tab, the newer tab takes the
-  stream (`superseded`) and this one polls every 30 seconds while its panel is open.
+  text message the store has given up on ("Not delivered."), which is sent again as a new one -
+  also when that message had itself been re-sent into a new conversation. No Retry is offered
+  when retrying cannot help (`bfslc_upload_limit`: the conversation already holds all the files
+  it may). After a 429 or 503 refusal the Retry button stays disabled for as many seconds as the
+  store's `Retry-After` header asks.
+- **Refusals say why.** A refusal the store explains (a 4xx answer with a known error code, for
+  example `bfslc_invalid_email` for an address it does not accept) shows the store's own message;
+  a server error (5xx) shows the generic "Something went wrong. Please try again." text. The
+  name and email fields allow what the store allows: 120 and 255 characters.
+- **A conversation that ended is restarted, and the visitor is told.** A message sent into a
+  conversation that has meanwhile ended (401/410) starts a new one and is sent there once, with
+  the note "Your previous conversation had ended, so this message started a new one."
+- **A stream can end.** After 30 minutes with nothing said the store ends the stream (`idle`;
+  a reconnect after that is answered at once with the same `idle` event, never refused). From
+  then on an open panel in a visible tab asks for new messages **every 60 seconds**, so a late
+  reply from the team still arrives, and the closed panel keeps its 30-second check for the
+  unread badge. Sending, reopening the panel or returning to the tab reconnects the stream at
+  once. If the same conversation is open in another tab, the newer tab takes the stream
+  (`superseded`) and this one polls every 30 seconds while its panel is open, until the visitor
+  sends from it: then it takes the stream back.
+- **One tab's ending never touches another's conversation.** Ending a conversation forgets the
+  stored token only if it is still that conversation's, so a newer conversation started in
+  another tab is kept.
 - One inline script, about 43 KB uncompressed (about 8 KB gzipped), parsed but idle until
   Alpine starts. No external JavaScript, no web fonts, no images (the icons are inline SVG).
 - The bubble and panel are `position: fixed`, so they cause no layout shift.
 - The bubble has an accessible name that includes the unread count, the panel is a labelled
   non-modal dialog, and new messages - and a message's status changing, such as "Not sent" -
-  are announced through a polite live region. Every control, the file picker included, shows
-  a visible keyboard focus ring.
+  are announced through a polite live region. The message list is marked `aria-busy` while the
+  conversation's history loads. Every control, the file picker included, shows a visible
+  keyboard focus ring. Inputs use a 16 px font, so iOS Safari does not zoom the page when one
+  is focused.
+- **Attachments differ from the Luma widget on purpose.** A file in the conversation shows a
+  **Download** button that fetches it (with the conversation's token) only when clicked; the
+  Luma widget previews images inline. Nothing is downloaded until the visitor asks.
 
 ## Troubleshooting
 
@@ -117,6 +176,7 @@ always inserted as text, never as HTML.
 | No bubble at all | Widget disabled for the store view, or you are on the checkout/success page, or the store view uses a Luma theme. |
 | Bubble shows but does nothing; console shows a CSP error | A custom CSP header replaced Magento's. Allow the hash in `etc/csp_whitelist.xml`, or Magento's nonce. |
 | Replies arrive with a few seconds' delay | The base package's concurrent-stream cap is full; the widget is polling every 3 seconds and will retry the stream every 60. |
+| After a long quiet spell a reply takes up to a minute to appear | Expected: after 30 minutes with no message the stream ends (`idle`) and the open panel checks every 60 seconds until the visitor sends or reopens it. |
 | The unread badge takes up to half a minute to appear | Expected: with the panel closed the widget checks every 30 seconds rather than holding a stream open (see Performance). |
 | A message reads "Not delivered yet. We will keep trying for about 48 minutes." | The store saved it but Slack refused it or could not be reached. The store retries for about 48 minutes; check the Slack credentials and the cron. |
 | A message reads "Not delivered." | The store's retries ran out. The visitor can press Retry to send it again. |
