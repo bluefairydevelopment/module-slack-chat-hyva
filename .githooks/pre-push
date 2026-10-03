@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+#
+# pre-push for bluefairy/module-slack-chat-hyva.
+#
+# TWO JOBS, and both of them can refuse a push:
+#
+#   1. A BRANCH push that brings new commits must carry a CHANGELOG.md change.
+#      Tags are skipped here: a tag names a commit already on the branch, so the
+#      "new commits" query is empty and this rule would reject every tag push.
+#
+#   2. A TAG push must pass this package's own gates FIRST, and every tag pushed
+#      must name HEAD with a clean working tree - the gates read the working tree,
+#      and a tag on any other commit would publish bytes nobody measured.
+#      composer validate, phpunit, phpcs and phpstan run against the tree being
+#      tagged and ANY non-zero exit refuses the push (M2MAP-546: a tag is a release,
+#      and no release is cut over a red gate). Exit codes are read, never output.
+#
+# INSTALL: this file is tracked. One line per clone, once:
+#
+#     git config core.hooksPath .githooks
+#
+# Test/Unit/Package/TheReleaseGateIsArmedTest fails the suite until that is done,
+# so a clone cannot forget.
+#
+# THE TOOLS COME FROM MAGENTO_ROOT. This package has no vendor/ of its own, and
+# Test/bootstrap.php needs a Magento install with compiled DI anyway. So the hook
+# refuses a tag push without MAGENTO_ROOT rather than run the gates against
+# nothing, and a release gate must say which install it measured.
+#
+# phpcs GETS NO PATH ARGUMENT: phpcs.xml.dist names `.` itself and excludes Test/
+# and docs/. Warnings are part of the gate.
+#
+# The hook was copied from module-contact-success's and adapted to this package
+# (its name in the run directory below). That history belongs to that package; none
+# of it has happened here yet.
+#
+# NOT A SERVER-SIDE CONTROL. `git push --no-verify`, an unwired clone, or a tag made in
+# GitHub's UI all bypass it. It stops the honest mistake - tagging over a red suite
+# without noticing.
+#
+# CONTROL: NOT YET RUN for this package. The control is to push a tag over a planted
+# red test to a throwaway bare remote and watch this hook refuse it; the control is
+# recorded in CHANGELOG.md once run. Re-run it whenever this file changes - a release
+# gate never seen to refuse is an untested instrument.
+
+set -u
+
+z40=0000000000000000000000000000000000000000
+has_commits=false
+changelog_updated=false
+tags_pushed=""
+tag_shas=""
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" = "$z40" ] && continue
+
+    case "$local_ref" in
+        refs/tags/*)
+            # EVERY tag, not the last one read: `git push --tags` can carry several.
+            tags_pushed="${tags_pushed} ${local_ref#refs/tags/}"
+            tag_shas="${tag_shas} ${local_sha}"
+            continue
+            ;;
+    esac
+
+    # A remote sha this clone has never fetched cannot be diffed against; treat it as a
+    # first push and compute the new commits instead.
+    if [ "$remote_sha" != "$z40" ] && ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+        remote_sha=$z40
+    fi
+
+    if [ "$remote_sha" = "$z40" ]; then
+        # FAIL CLOSED: a git command that errors prints nothing, and nothing reads exactly like
+        # "no new commits" - which would skip this rule instead of enforcing it.
+        if ! new_commits=$(git log --format="%H" "$local_sha" --not --remotes); then
+            echo "  Push refused: could not list the commits being pushed (git log failed)." >&2
+            exit 1
+        fi
+        [ -z "$new_commits" ] && continue
+        # ONE diff-tree PER COMMIT: given several commits at once, diff-tree compares them
+        # against each other and printed nothing for a multi-commit push (module-order-comments).
+        changed=""
+        for c in $new_commits; do
+            if ! files=$(git diff-tree --no-commit-id -r --root --name-only "$c"); then
+                echo "  Push refused: could not read the files changed by $c (git diff-tree failed)." >&2
+                exit 1
+            fi
+            changed="${changed}${files}
+"
+        done
+    else
+        if ! changed=$(git diff --name-only "$remote_sha" "$local_sha"); then
+            echo "  Push refused: could not diff $remote_sha..$local_sha (git diff failed)." >&2
+            exit 1
+        fi
+        [ -z "$changed" ] && continue
+    fi
+
+    has_commits=true
+
+    if echo "$changed" | grep -qx 'CHANGELOG.md'; then
+        changelog_updated=true
+    fi
+done
+
+if $has_commits && ! $changelog_updated; then
+    echo "" >&2
+    echo "  Push rejected: CHANGELOG.md has not been updated." >&2
+    echo "  Add an entry to CHANGELOG.md and commit it before pushing." >&2
+    echo "" >&2
+    exit 1
+fi
+
+if [ -n "$tags_pushed" ]; then
+    root="$(git rev-parse --show-toplevel)"
+    cd "$root" || exit 1
+
+    head=$(git rev-parse HEAD)
+    for sha in $tag_shas; do
+        target=$(git rev-parse "${sha}^{commit}" 2>/dev/null)
+        if [ "$target" != "$head" ]; then
+            echo "" >&2
+            echo "  Tag push refused: a tag points at ${target:-an unknown object}, but HEAD is ${head}." >&2
+            echo "  The gates measure the working tree. Check out the commit you are tagging and retry." >&2
+            echo "" >&2
+            exit 1
+        fi
+    done
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "" >&2
+        echo "  Tag push refused: the working tree has uncommitted or untracked changes." >&2
+        echo "  The gates would measure them and the tag would not contain them. Commit or stash, then retry." >&2
+        echo "" >&2
+        exit 1
+    fi
+
+    if [ -z "${MAGENTO_ROOT:-}" ] || [ ! -x "${MAGENTO_ROOT}/vendor/bin/phpunit" ]; then
+        echo "" >&2
+        echo "  Tag push refused: MAGENTO_ROOT is not set to a Magento install with vendor/bin/phpunit." >&2
+        echo "  The gates have to run against the tree being tagged, and say which install they" >&2
+        echo "  measured it against. Export MAGENTO_ROOT and retry." >&2
+        echo "" >&2
+        exit 1
+    fi
+
+    echo "pre-push: running the release gates for tag(s)${tags_pushed} against ${MAGENTO_ROOT}" >&2
+
+    # One private directory per run, for the logs and phpstan's cache alike: fixed names
+    # under /tmp are predictable, and phpstan's cache is keyed on the analysed files and
+    # NOT on MAGENTO_ROOT, so a shared one replays another root's verdict.
+    run_dir=$(mktemp -d "${TMPDIR:-/tmp}/module-slack-chat-hyva-pre-push.XXXXXX") || exit 1
+    stan_tmp="$run_dir/phpstan"
+    mkdir "$stan_tmp" || exit 1
+
+    gate() {
+        local name="$1"; shift
+        "$@" >"$run_dir/$name.log" 2>&1
+        local status=$?
+        if [ "$status" -ne 0 ]; then
+            echo "" >&2
+            echo "  Tag push refused: ${name} exited ${status}. Log: $run_dir/${name}.log" >&2
+            echo "  A tag is a release. Fix it, or do not tag it." >&2
+            echo "" >&2
+            exit "$status"
+        fi
+        echo "pre-push: ${name} exit 0" >&2
+    }
+
+    gate composer-validate composer validate --no-check-publish --quiet
+    gate phpunit env MAGENTO_ROOT="$MAGENTO_ROOT" "$MAGENTO_ROOT/vendor/bin/phpunit" -c phpunit.xml.dist
+    gate phpcs "$MAGENTO_ROOT/vendor/bin/phpcs" --standard=phpcs.xml.dist -q
+    gate phpstan env MAGENTO_ROOT="$MAGENTO_ROOT" TMPDIR="$stan_tmp" "$MAGENTO_ROOT/vendor/bin/phpstan" analyse -c phpstan.neon.dist --no-progress --memory-limit=2G
+
+    rm -rf "$run_dir"
+fi
+
+exit 0

@@ -1,6 +1,21 @@
 <?xml version="1.0"?>
+<!--
+/**
+ * Copyright © 2026 Blue Fairy Development. All rights reserved.
+ */
+-->
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="urn:magento:framework:Module/etc/module.xsd">
+    <!--
+        THE SEQUENCE IS LOAD-BEARING. Magento merges layout files in module load
+        order, and view/frontend/layout/hyva_default.xml removes the base module's
+        Luma block (bluefairy.slc.widget.luma). A <referenceBlock remove="true">
+        merged BEFORE the block is declared still applies (removals are resolved
+        after the merge), but the companion convention in this estate is to load
+        after what it overrides so the order never has to be reasoned about.
+        Hyva_Theme first, because the hyva_ handle mirroring and the
+        hyva_config_generate_before event both belong to it.
+    -->
     <module name="BlueFairy_SlackChatHyva">
         <sequence>
             <module name="BlueFairy_SlackChat"/>

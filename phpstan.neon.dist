@@ -1,0 +1,23 @@
+# Gate 1 static analysis for module-slack-chat-hyva (plan: level 6).
+#   MAGENTO_ROOT=~/Sites/magento-vanilla ~/Sites/magento-vanilla/vendor/bin/phpstan analyse -c phpstan.neon.dist
+#
+# Test/bootstrap.php refuses to analyse when any imported Factory/Extension class
+# is unresolved (M2MAP-682), so a 0 here was measured with real classes.
+#
+# DELIBERATELY EMPTY OF ignoreErrors: two shipped classes, a true zero to start
+# from. The templates are not analysed (phpstan does not read .phtml); what they
+# depend on is covered by Test/Unit/ViewModel and Test/Unit/Csp.
+parameters:
+    # composer.json admits PHP 8.3 as its lowest version; analyse there.
+    phpVersion: 80300
+    level: 6
+    paths:
+        - Observer
+        - ViewModel
+        - registration.php
+    excludePaths:
+        - */Test/*
+        - */node_modules/*
+    bootstrapFiles:
+        - Test/bootstrap.php
+    treatPhpDocTypesAsCertain: false

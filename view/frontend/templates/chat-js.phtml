@@ -1,0 +1,924 @@
+<?php
+/**
+ * Copyright © 2026 Blue Fairy Development. All rights reserved.
+ *
+ * The Alpine component behind widget.phtml, registered as Alpine.data('bfslcChat').
+ *
+ * WHY AN INLINE SCRIPT AND NOT web/js/chat.js: Hyvä loads Alpine as a deferred
+ * module script (Hyva_Theme::page/js/alpinejs.phtml), and a component must be
+ * registered on `alpine:init`, before Alpine walks the page. An inline script in
+ * before.body.end is parsed before any deferred script runs; a separate deferred
+ * file is not guaranteed to be. This is Hyvä's own convention.
+ *
+ * THE SCRIPT BODY IS STATIC. No PHP is interpolated between <script> and
+ * </script> - the per-page data travels in widget.phtml's data-bfslc-config
+ * attribute instead - so the body hashes to the same sha256 on every page, every
+ * store and every visitor. That hash is pinned in etc/csp_whitelist.xml and
+ * Test/Unit/Csp/InlineScriptHashTest fails if the two drift.
+ *
+ * THE BODY MUST SURVIVE MAGENTO'S HTML MINIFIER UNCHANGED (production mode with
+ * dev/template/minify_html on). Magento\Framework\View\Template\Html\Minifier
+ * leaves whitespace inside <script> alone but deletes every `//` comment, every
+ * run of whitespace before `</`, and the space in `> <`. So the body contains
+ * no line comments, no `</`, no `> <`, and nothing between its last character
+ * and </script>. InlineScriptHashTest runs the real Minifier over this file and
+ * asserts the hash is unchanged.
+ *
+ * CSP-BUILD ALPINE. Hyvä 1.3.11+ serves the Alpine CSP build when the store's
+ * policy has no 'unsafe-eval' (theme-module CHANGELOG, 1.3.11 "Support strict
+ * CSP mode"). That build's evaluator (alpine3-csp.js generateEvaluator) only
+ * walks a dot path and calls the result if it is a function: no operators, no
+ * arguments, no assignment, and a path segment that is `undefined` throws. Hence:
+ * every directive names a property, getter or method; every message carries
+ * every field it is read by (never undefined); x-model is not used (it assigns -
+ * Hyvä documents @input + :value instead); and a method run from inside x-for
+ * reads the loop item as `this.message`.
+ *
+ * Non-reactive state (the EventSource, timers, File objects) lives in the `rt`
+ * closure, not on the component: Alpine wraps component properties in Proxies,
+ * and calling a native method such as EventSource.close() or
+ * FileReader.readAsDataURL() through a Proxy throws "Illegal invocation".
+ *
+ * Visitor and agent text is only ever placed with x-text (textContent).
+ *
+ * Every class string returned below is a literal in this file, so the
+ * view/frontend/tailwind/module.css @source glob reaches them.
+ */
+
+declare(strict_types=1);
+
+use BlueFairy\SlackChatHyva\ViewModel\WidgetViewModel;
+use Magento\Framework\Escaper;
+use Magento\Framework\View\Element\Template;
+
+/** @var Template $block */
+/** @var Escaper $escaper */
+
+$viewModel = $block->getData('view_model');
+$nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
+?>
+<script nonce="<?= $escaper->escapeHtmlAttr($nonce) ?>">
+(function () {
+    'use strict';
+
+    var TOKEN_PATTERN = /^[a-f0-9]{64}$/;
+    var SESSION_GONE = [401, 410];
+    var POLL_MS = 3000;
+    var STREAM_RETRY_MS = 60000;
+    var HISTORY_PAGE = 200;
+    var HISTORY_MAX_PAGES = 10;
+
+    var ROW_CLASS = {
+        outbound: 'flex flex-col items-end',
+        inbound: 'flex flex-col items-start',
+        system: 'flex flex-col items-center'
+    };
+    var BUBBLE_CLASS = {
+        outbound: 'max-w-[85%] rounded-lg px-3 py-2 bg-gray-900 text-white',
+        inbound: 'max-w-[85%] rounded-lg px-3 py-2 bg-gray-100 text-gray-900',
+        system: 'max-w-full rounded px-3 py-1 bg-amber-50 text-amber-900 text-center'
+    };
+    var BANNER_CLASS = {
+        online: 'px-4 py-2 text-sm bg-green-50 text-green-800',
+        away: 'px-4 py-2 text-sm bg-amber-50 text-amber-900',
+        offline: 'px-4 py-2 text-sm bg-gray-100 text-gray-700'
+    };
+    var STATUS_FAILED_CLASS = 'mt-1 text-xs text-red-700';
+    var STATUS_QUIET_CLASS = 'mt-1 text-xs text-gray-500';
+
+    function readStored(key) {
+        try {
+            var value = window.localStorage.getItem(key);
+            return typeof value === 'string' && TOKEN_PATTERN.test(value) ? value : '';
+        } catch (e) {
+            return '';
+        }
+    }
+
+    function writeStored(key, value) {
+        try {
+            window.localStorage.setItem(key, value);
+        } catch (e) {
+            return;
+        }
+    }
+
+    function forgetStored(key) {
+        try {
+            window.localStorage.removeItem(key);
+        } catch (e) {
+            return;
+        }
+    }
+
+    function toInt(value) {
+        var n = parseInt(value, 10);
+        return isNaN(n) ? 0 : n;
+    }
+
+    function text(value) {
+        return value === null || value === undefined ? '' : String(value);
+    }
+
+    function request(method, url, payload) {
+        var init = {
+            method: method,
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }
+        };
+        if (payload !== null) {
+            init.headers['Content-Type'] = 'application/json';
+            init.body = JSON.stringify(payload);
+        }
+        return window.fetch(url, init).then(function (response) {
+            return response.text().then(function (raw) {
+                var data = null;
+                try {
+                    data = raw === '' ? null : JSON.parse(raw);
+                } catch (e) {
+                    data = null;
+                }
+                return { ok: response.ok, status: response.status, data: data };
+            });
+        }, function () {
+            return { ok: false, status: 0, data: null };
+        });
+    }
+
+    function readAsBase64(file) {
+        return new Promise(function (resolve, reject) {
+            var reader = new FileReader();
+            reader.onload = function () {
+                var result = String(reader.result);
+                var comma = result.indexOf(',');
+                resolve(comma === -1 ? '' : result.slice(comma + 1));
+            };
+            reader.onerror = function () {
+                reject(new Error('read'));
+            };
+            reader.readAsDataURL(file);
+        });
+    }
+
+    function bfslcChat() {
+        var rt = {
+            config: {},
+            i18n: {},
+            storageKey: 'bfslc_token_default',
+            seq: 0,
+            lastId: 0,
+            seen: {},
+            files: {},
+            chain: Promise.resolve(),
+            starting: null,
+            es: null,
+            pollTimer: null,
+            pollBusy: false,
+            retryTimer: null,
+            blobUrls: []
+        };
+
+        function t(key) {
+            return text(rt.i18n[key]);
+        }
+
+        return {
+            isOpen: false,
+            booted: false,
+            token: '',
+            sessionStatus: '',
+            availability: '',
+            availabilityMessage: '',
+            messages: [],
+            notice: '',
+            draft: '',
+            displayName: '',
+            email: '',
+            unreadCount: 0,
+            uploadsEnabled: false,
+            acceptList: '',
+
+            init() {
+                var parsed = {};
+                try {
+                    parsed = JSON.parse(this.$el.dataset.bfslcConfig || '{}') || {};
+                } catch (e) {
+                    parsed = {};
+                }
+                rt.config = parsed;
+                rt.i18n = parsed.i18n || {};
+                rt.storageKey = 'bfslc_token_' + text(parsed.storeCode || 'default');
+                this.uploadsEnabled = parsed.uploadsEnabled === true;
+                this.acceptList = (parsed.allowedMimeTypes || []).join(',');
+
+                var self = this;
+                window.addEventListener('pagehide', function () {
+                    self.stopRealtime();
+                    rt.blobUrls.forEach(function (url) {
+                        URL.revokeObjectURL(url);
+                    });
+                    rt.blobUrls = [];
+                });
+                window.addEventListener('pageshow', function (event) {
+                    if (event.persisted && self.booted) {
+                        self.connectRealtime();
+                    }
+                });
+                document.addEventListener('visibilitychange', function () {
+                    if (document.hidden) {
+                        self.stopRealtime();
+                    } else if (self.booted) {
+                        self.connectRealtime();
+                    }
+                });
+            },
+
+            get ariaExpanded() {
+                return this.isOpen ? 'true' : 'false';
+            },
+            get hasSession() {
+                return this.token !== '' && this.sessionStatus === 'active';
+            },
+            get needsIntro() {
+                return this.token === '';
+            },
+            get hasNoMessages() {
+                return this.messages.length === 0;
+            },
+            get hasBanner() {
+                return this.availabilityMessage !== '';
+            },
+            get bannerText() {
+                return this.availabilityMessage;
+            },
+            get bannerClass() {
+                return BANNER_CLASS[this.availability] || BANNER_CLASS.offline;
+            },
+            get hasNotice() {
+                return this.notice !== '';
+            },
+            get hasUnread() {
+                return this.unreadCount > 0;
+            },
+            get sendDisabled() {
+                return this.draft.trim() === '';
+            },
+
+            toggle() {
+                if (this.isOpen) {
+                    this.close();
+                } else {
+                    this.open();
+                }
+            },
+
+            open() {
+                this.isOpen = true;
+                this.unreadCount = 0;
+                if (!this.booted) {
+                    this.booted = true;
+                    this.boot();
+                }
+                var self = this;
+                this.$nextTick(function () {
+                    if (self.$refs.input) {
+                        self.$refs.input.focus();
+                    }
+                    self.scrollLog();
+                });
+            },
+
+            close() {
+                this.isOpen = false;
+                var self = this;
+                this.$nextTick(function () {
+                    if (self.$refs.bubble) {
+                        self.$refs.bubble.focus();
+                    }
+                });
+            },
+
+            onNameInput(event) {
+                this.displayName = event.target.value;
+            },
+            onEmailInput(event) {
+                this.email = event.target.value;
+            },
+            onDraftInput(event) {
+                this.draft = event.target.value;
+            },
+            onEnter(event) {
+                if (event.shiftKey || event.isComposing) {
+                    return;
+                }
+                event.preventDefault();
+                this.send();
+            },
+
+            boot() {
+                var self = this;
+                var stored = readStored(rt.storageKey);
+                if (stored === '') {
+                    this.fetchAvailability();
+                    return;
+                }
+                this.token = stored;
+                request('POST', rt.config.restRoot + 'session/status', { sessionToken: stored }).then(function (res) {
+                    if (res.ok && res.data && res.data.status === 'active') {
+                        self.adoptSession(res.data);
+                        return self.loadHistory().then(function () {
+                            self.connectRealtime();
+                        });
+                    }
+                    if (res.ok || res.status === 400 || SESSION_GONE.indexOf(res.status) !== -1) {
+                        self.dropSession();
+                        self.fetchAvailability();
+                        return null;
+                    }
+                    self.notice = res.status === 503 ? t('unavailable') : t('genericError');
+                    return null;
+                });
+            },
+
+            fetchAvailability() {
+                var self = this;
+                request('GET', rt.config.restRoot + 'availability/0', null).then(function (res) {
+                    if (res.ok && res.data) {
+                        self.availability = text(res.data.status);
+                        self.availabilityMessage = text(res.data.message);
+                    }
+                });
+            },
+
+            adoptSession(data) {
+                this.token = text(data.session_token) || this.token;
+                this.sessionStatus = text(data.status);
+                this.availability = text(data.availability);
+                this.availabilityMessage = text(data.availability_message);
+                writeStored(rt.storageKey, this.token);
+            },
+
+            dropSession() {
+                this.stopRealtime();
+                forgetStored(rt.storageKey);
+                this.token = '';
+                this.sessionStatus = '';
+            },
+
+            ensureSession() {
+                if (this.token !== '') {
+                    return Promise.resolve(this.token);
+                }
+                if (rt.starting) {
+                    return rt.starting;
+                }
+                var self = this;
+                var payload = {};
+                ['productId', 'categoryId', 'cmsPageId'].forEach(function (key) {
+                    if (toInt(rt.config[key]) > 0) {
+                        payload[key] = toInt(rt.config[key]);
+                    }
+                });
+                if (this.displayName.trim() !== '') {
+                    payload.displayName = this.displayName.trim();
+                }
+                if (this.email.trim() !== '') {
+                    payload.email = this.email.trim();
+                }
+                payload.originUrl = window.location.href.split('#')[0];
+                rt.starting = request('POST', rt.config.restRoot + 'session', payload).then(function (res) {
+                    rt.starting = null;
+                    if (!res.ok || !res.data || !TOKEN_PATTERN.test(text(res.data.session_token))) {
+                        return Promise.reject(res);
+                    }
+                    self.adoptSession(res.data);
+                    self.connectRealtime();
+                    return self.token;
+                });
+                return rt.starting;
+            },
+
+            loadHistory() {
+                var self = this;
+                var page = 0;
+                function next() {
+                    page += 1;
+                    return request('POST', rt.config.restRoot + 'messages', {
+                        sessionToken: self.token,
+                        afterId: rt.lastId,
+                        limit: HISTORY_PAGE
+                    }).then(function (res) {
+                        if (!res.ok || !res.data) {
+                            if (SESSION_GONE.indexOf(res.status) !== -1) {
+                                self.conversationEnded();
+                            }
+                            return null;
+                        }
+                        var items = res.data.items || [];
+                        items.forEach(function (item) {
+                            self.receive(item);
+                        });
+                        if (items.length === HISTORY_PAGE && page < HISTORY_MAX_PAGES) {
+                            return next();
+                        }
+                        return null;
+                    });
+                }
+                return next();
+            },
+
+            byKey(key) {
+                for (var i = 0; i < this.messages.length; i++) {
+                    if (this.messages[i].key === key) {
+                        return this.messages[i];
+                    }
+                }
+                return null;
+            },
+
+            removeKey(key) {
+                this.messages = this.messages.filter(function (m) {
+                    return m.key !== key;
+                });
+            },
+
+            decorate(msg) {
+                var dir = ROW_CLASS[msg.direction] ? msg.direction : 'system';
+                msg.rowClass = ROW_CLASS[dir];
+                msg.bubbleClass = BUBBLE_CLASS[dir];
+                msg.isFailed = msg.state === 'failed';
+                msg.canDownload = msg.attachmentUrl !== '';
+                msg.hasAttachment = msg.attachmentName !== '' || msg.canDownload;
+                msg.isPendingFile = msg.hasAttachment && !msg.canDownload;
+                msg.attachmentLabel = msg.canDownload
+                    ? t('download') + ': ' + (msg.attachmentName || t('download'))
+                    : msg.attachmentName;
+                msg.hasBody = msg.body !== '';
+                if (msg.state === 'sending') {
+                    msg.statusLabel = t('sending');
+                } else if (msg.state === 'failed') {
+                    msg.statusLabel = t('notSent') + (msg.failReason !== '' ? ': ' + msg.failReason : '');
+                } else if (msg.direction === 'outbound' && msg.deliveryStatus === 'failed') {
+                    msg.statusLabel = t('notDelivered');
+                } else {
+                    msg.statusLabel = '';
+                }
+                msg.hasStatus = msg.statusLabel !== '';
+                msg.statusClass = msg.isFailed ? STATUS_FAILED_CLASS : STATUS_QUIET_CLASS;
+                return msg;
+            },
+
+            local(kind, body, name) {
+                rt.seq += 1;
+                return this.decorate({
+                    key: 'l' + rt.seq,
+                    id: 0,
+                    kind: kind,
+                    direction: 'outbound',
+                    authorLabel: t('you'),
+                    body: body,
+                    attachmentUrl: '',
+                    attachmentName: name,
+                    deliveryStatus: '',
+                    state: 'sending',
+                    failReason: '',
+                    resent: false
+                });
+            },
+
+            apply(msg, raw) {
+                var dir = text(raw.direction);
+                msg.id = toInt(raw.id);
+                msg.direction = ROW_CLASS[dir] ? dir : 'system';
+                if (msg.direction === 'outbound') {
+                    msg.authorLabel = t('you');
+                } else if (msg.direction === 'inbound') {
+                    msg.authorLabel = text(raw.author_name) || t('agent');
+                } else {
+                    msg.authorLabel = t('system');
+                }
+                msg.body = text(raw.body);
+                msg.attachmentUrl = text(raw.attachment_url);
+                msg.attachmentName = text(raw.attachment_name);
+                msg.deliveryStatus = text(raw.delivery_status);
+                msg.state = 'sent';
+                msg.failReason = '';
+                this.decorate(msg);
+            },
+
+            receive(raw) {
+                var id = raw ? toInt(raw.id) : 0;
+                if (id <= 0) {
+                    return;
+                }
+                if (id > rt.lastId) {
+                    rt.lastId = id;
+                }
+                var knownKey = rt.seen[id];
+                if (knownKey) {
+                    var known = this.byKey(knownKey);
+                    if (known) {
+                        this.apply(known, raw);
+                    }
+                    return;
+                }
+                if (text(raw.direction) === 'outbound') {
+                    var pending = this.pendingMatch(raw);
+                    if (pending) {
+                        this.apply(pending, raw);
+                        rt.seen[id] = pending.key;
+                        return;
+                    }
+                }
+                rt.seq += 1;
+                this.messages.push(this.decorate({
+                    key: 'm' + id,
+                    id: id,
+                    kind: 'text',
+                    direction: 'system',
+                    authorLabel: '',
+                    body: '',
+                    attachmentUrl: '',
+                    attachmentName: '',
+                    deliveryStatus: '',
+                    state: 'sent',
+                    failReason: '',
+                    resent: false
+                }));
+                this.apply(this.byKey('m' + id), raw);
+                rt.seen[id] = 'm' + id;
+                if (!this.isOpen && text(raw.direction) !== 'outbound') {
+                    this.unreadCount += 1;
+                }
+                this.scrollLog();
+            },
+
+            pendingMatch(raw) {
+                var body = text(raw.body);
+                var name = text(raw.attachment_name);
+                for (var i = 0; i < this.messages.length; i++) {
+                    var m = this.messages[i];
+                    if (m.id === 0 && m.state === 'sending'
+                        && (m.kind === 'file' ? m.attachmentName === name : m.body === body)) {
+                        return m;
+                    }
+                }
+                return null;
+            },
+
+            confirm(key, data) {
+                var id = data ? toInt(data.id) : 0;
+                var msg = this.byKey(key);
+                if (!msg) {
+                    return;
+                }
+                delete rt.files[key];
+                if (id > 0 && rt.seen[id] && rt.seen[id] !== key) {
+                    this.removeKey(key);
+                    var known = this.byKey(rt.seen[id]);
+                    if (known) {
+                        this.apply(known, data);
+                    }
+                    return;
+                }
+                this.apply(msg, data || {});
+                if (id > 0) {
+                    rt.seen[id] = key;
+                    if (id > rt.lastId) {
+                        rt.lastId = id;
+                    }
+                }
+            },
+
+            fail(key, status, kind) {
+                var msg = this.byKey(key);
+                if (!msg) {
+                    return;
+                }
+                var reason = t('genericError');
+                if (status === 429) {
+                    reason = t('rateLimited');
+                } else if (status === 503) {
+                    reason = t('unavailable');
+                } else if (status === 413) {
+                    reason = t('tooLarge');
+                } else if (status === 403) {
+                    reason = t('uploadsOff');
+                } else if (status === 400 && kind === 'file') {
+                    reason = t('typeNotAllowed');
+                } else if (SESSION_GONE.indexOf(status) !== -1) {
+                    reason = t('ended');
+                }
+                msg.state = 'failed';
+                msg.failReason = reason;
+                this.decorate(msg);
+            },
+
+            send() {
+                var body = this.draft.trim();
+                if (body === '') {
+                    return;
+                }
+                this.draft = '';
+                this.notice = '';
+                var msg = this.local('text', body, '');
+                this.messages.push(msg);
+                this.enqueue(msg.key);
+                this.scrollLog();
+            },
+
+            onFileChosen(event) {
+                var input = event.target;
+                var file = input.files && input.files.length > 0 ? input.files[0] : null;
+                input.value = '';
+                if (!file) {
+                    return;
+                }
+                this.notice = '';
+                if (!this.uploadsEnabled) {
+                    this.notice = t('uploadsOff');
+                    return;
+                }
+                if (file.size > toInt(rt.config.maxUploadBytes)) {
+                    this.notice = t('tooLarge');
+                    return;
+                }
+                var allowed = rt.config.allowedMimeTypes || [];
+                if (allowed.length > 0 && allowed.indexOf(file.type) === -1) {
+                    this.notice = t('typeNotAllowed');
+                    return;
+                }
+                var msg = this.local('file', '', text(file.name));
+                rt.files[msg.key] = { file: file, content: null };
+                this.messages.push(msg);
+                this.enqueue(msg.key);
+                this.scrollLog();
+            },
+
+            retry() {
+                var msg = this.byKey(this.message.key);
+                if (!msg || msg.state !== 'failed') {
+                    return;
+                }
+                msg.resent = false;
+                msg.state = 'sending';
+                msg.failReason = '';
+                this.decorate(msg);
+                this.enqueue(msg.key);
+            },
+
+            enqueue(key) {
+                var self = this;
+                rt.chain = rt.chain.then(function () {
+                    return self.deliver(key);
+                }).catch(function () {
+                    self.fail(key, 0, 'text');
+                });
+            },
+
+            deliver(key) {
+                var self = this;
+                var msg = this.byKey(key);
+                if (!msg) {
+                    return Promise.resolve();
+                }
+                return this.ensureSession().then(function () {
+                    return self.post(key);
+                }, function (res) {
+                    return res && typeof res.status === 'number' ? res : { ok: false, status: 0, data: null };
+                }).then(function (res) {
+                    var current = self.byKey(key);
+                    if (!current) {
+                        return null;
+                    }
+                    if (res.ok) {
+                        self.confirm(key, res.data);
+                        return null;
+                    }
+                    if (SESSION_GONE.indexOf(res.status) !== -1) {
+                        self.dropSession();
+                        if (!current.resent) {
+                            current.resent = true;
+                            return self.deliver(key);
+                        }
+                    }
+                    self.fail(key, res.status, current.kind);
+                    return null;
+                });
+            },
+
+            post(key) {
+                var msg = this.byKey(key);
+                var root = rt.config.restRoot;
+                var token = this.token;
+                if (msg.kind !== 'file') {
+                    return request('POST', root + 'message', { sessionToken: token, body: msg.body });
+                }
+                var entry = rt.files[key];
+                if (!entry) {
+                    return Promise.resolve({ ok: false, status: 0, data: null });
+                }
+                var ready = entry.content !== null ? Promise.resolve(entry.content) : readAsBase64(entry.file);
+                return ready.then(function (content) {
+                    entry.content = content;
+                    return request('POST', root + 'upload', {
+                        sessionToken: token,
+                        filename: text(entry.file.name),
+                        mimeType: text(entry.file.type) || 'application/octet-stream',
+                        content: content
+                    });
+                }, function () {
+                    return { ok: false, status: 0, data: null };
+                });
+            },
+
+            openAttachment() {
+                var msg = this.byKey(this.message.key);
+                var self = this;
+                if (!msg || msg.attachmentUrl === '' || this.token === '') {
+                    return;
+                }
+                var name = msg.attachmentName || 'attachment';
+                window.fetch(msg.attachmentUrl, {
+                    credentials: 'same-origin',
+                    headers: { 'X-Bfslc-Token': this.token }
+                }).then(function (response) {
+                    return response.ok ? response.blob() : Promise.reject(response);
+                }).then(function (blob) {
+                    var url = URL.createObjectURL(blob);
+                    rt.blobUrls.push(url);
+                    var link = document.createElement('a');
+                    link.href = url;
+                    link.download = name;
+                    link.rel = 'noopener';
+                    document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                }).catch(function () {
+                    self.notice = t('genericError');
+                });
+            },
+
+            endChat() {
+                var self = this;
+                var token = this.token;
+                if (token === '') {
+                    return;
+                }
+                request('POST', rt.config.restRoot + 'session/close', { sessionToken: token }).then(function () {
+                    self.conversationEnded();
+                });
+            },
+
+            conversationEnded() {
+                this.dropSession();
+                rt.seq += 1;
+                this.messages.push(this.decorate({
+                    key: 'e' + rt.seq,
+                    id: 0,
+                    kind: 'text',
+                    direction: 'system',
+                    authorLabel: t('system'),
+                    body: t('ended'),
+                    attachmentUrl: '',
+                    attachmentName: '',
+                    deliveryStatus: '',
+                    state: 'sent',
+                    failReason: '',
+                    resent: false
+                }));
+                this.scrollLog();
+            },
+
+            connectRealtime() {
+                if (this.token === '' || rt.es !== null || rt.pollTimer !== null || document.hidden) {
+                    return;
+                }
+                if (typeof window.EventSource !== 'function') {
+                    this.startPolling();
+                    return;
+                }
+                var self = this;
+                var base = text(rt.config.streamUrl);
+                var url = base + (base.indexOf('?') === -1 ? '?' : '&')
+                    + 'token=' + encodeURIComponent(this.token) + '&after=' + rt.lastId;
+                var source = new window.EventSource(url);
+                rt.es = source;
+                source.addEventListener('message', function (event) {
+                    var data = null;
+                    try {
+                        data = JSON.parse(event.data);
+                    } catch (e) {
+                        data = null;
+                    }
+                    if (data) {
+                        self.receive(data);
+                    }
+                });
+                source.addEventListener('closed', function () {
+                    self.conversationEnded();
+                });
+                source.onerror = function () {
+                    if (source.readyState !== window.EventSource.CLOSED) {
+                        return;
+                    }
+                    self.stopStream();
+                    self.startPolling();
+                    self.scheduleStreamRetry();
+                };
+            },
+
+            stopStream() {
+                if (rt.es !== null) {
+                    rt.es.close();
+                    rt.es = null;
+                }
+            },
+
+            startPolling() {
+                if (rt.pollTimer !== null || this.token === '') {
+                    return;
+                }
+                var self = this;
+                rt.pollTimer = window.setInterval(function () {
+                    self.poll();
+                }, POLL_MS);
+            },
+
+            stopPolling() {
+                if (rt.pollTimer !== null) {
+                    window.clearInterval(rt.pollTimer);
+                    rt.pollTimer = null;
+                }
+            },
+
+            poll() {
+                var self = this;
+                if (rt.pollBusy || this.token === '') {
+                    return;
+                }
+                rt.pollBusy = true;
+                request('POST', rt.config.restRoot + 'messages', {
+                    sessionToken: this.token,
+                    afterId: rt.lastId,
+                    limit: 100
+                }).then(function (res) {
+                    rt.pollBusy = false;
+                    if (res.ok && res.data) {
+                        (res.data.items || []).forEach(function (item) {
+                            self.receive(item);
+                        });
+                    } else if (SESSION_GONE.indexOf(res.status) !== -1) {
+                        self.conversationEnded();
+                    }
+                });
+            },
+
+            scheduleStreamRetry() {
+                var self = this;
+                if (rt.retryTimer !== null) {
+                    return;
+                }
+                rt.retryTimer = window.setTimeout(function () {
+                    rt.retryTimer = null;
+                    self.stopPolling();
+                    self.connectRealtime();
+                }, STREAM_RETRY_MS);
+            },
+
+            stopRealtime() {
+                this.stopStream();
+                this.stopPolling();
+                if (rt.retryTimer !== null) {
+                    window.clearTimeout(rt.retryTimer);
+                    rt.retryTimer = null;
+                }
+            },
+
+            scrollLog() {
+                var self = this;
+                this.$nextTick(function () {
+                    var log = self.$refs.log;
+                    if (log) {
+                        log.scrollTop = log.scrollHeight;
+                    }
+                });
+            }
+        };
+    }
+
+    function register() {
+        window.Alpine.data('bfslcChat', bfslcChat);
+    }
+
+    if (window.Alpine && typeof window.Alpine.data === 'function') {
+        register();
+    }
+    document.addEventListener('alpine:init', register, { once: true });
+})();</script>
+<?php
+// Hyvä theme-module 1.3.11+ (and only on a Hyvä theme) provides $hyvaCsp. It must be
+// called while the script above is the last thing in the output buffer.
+if (isset($hyvaCsp) && $hyvaCsp instanceof \Hyva\Theme\ViewModel\HyvaCsp) {
+    $hyvaCsp->registerInlineScript();
+}

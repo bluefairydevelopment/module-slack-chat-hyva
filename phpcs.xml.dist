@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<!--
+    Gate 1 coding standard for module-slack-chat-hyva. Run from the package root:
+
+        <magento-root>/vendor/bin/phpcs standard=phpcs.xml.dist -q
+
+    (the flag is the usual two-hyphen "standard"; a literal double hyphen cannot
+    appear inside an XML comment.)
+
+    Exclusions mirror the base package and the house ruleset (Printify,
+    product-grid-export, jira-hyva): docblock-format opinions and pure formatting
+    sniffs only. Nothing that could hide a defect is excluded - EmptyBlock,
+    DiscouragedFunction, the ObjectManager sniff and the template XSS sniff stay on,
+    and the .phtml templates are in scope.
+-->
+<ruleset name="BlueFairySlackChatHyva">
+    <description>Magento 2 coding standard for module-slack-chat-hyva.</description>
+
+    <rule ref="Magento2">
+        <exclude name="Magento2.Annotation.MethodAnnotationStructure"/>
+        <exclude name="Magento2.Annotation.MethodArguments"/>
+        <exclude name="Magento2.Commenting.ClassPropertyPHPDocFormatting"/>
+        <exclude name="Magento2.Commenting.ClassAndInterfacePHPDocFormatting"/>
+
+        <exclude name="PSR2.Methods.FunctionCallSignature"/>
+        <exclude name="Squiz.Functions.MultiLineFunctionDeclaration"/>
+        <exclude name="Squiz.WhiteSpace.ScopeClosingBrace"/>
+        <exclude name="Squiz.ControlStructures.ControlSignature"/>
+        <exclude name="PEAR.ControlStructures.ControlSignature"/>
+        <exclude name="Generic.Files.LineLength"/>
+        <exclude name="Magento2.Whitespace.MultipleEmptyLines"/>
+    </rule>
+
+    <file>.</file>
+
+    <exclude-pattern>*/Test/*</exclude-pattern>
+    <exclude-pattern>*/docs/*</exclude-pattern>
+    <exclude-pattern>*/.idea/*</exclude-pattern>
+    <exclude-pattern>*/node_modules/*</exclude-pattern>
+
+    <arg name="extensions" value="php,phtml"/>
+    <arg name="colors"/>
+    <arg value="p"/>
+</ruleset>

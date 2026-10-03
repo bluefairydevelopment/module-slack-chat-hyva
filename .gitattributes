@@ -11,3 +11,5 @@ Test/ export-ignore
 phpunit.xml.dist export-ignore
 phpstan.neon.dist export-ignore
 phpcs.xml.dist export-ignore
+.githooks/ export-ignore
+.claude/ export-ignore

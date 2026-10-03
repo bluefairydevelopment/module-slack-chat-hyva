@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<!--
+/**
+ * Copyright © 2026 Blue Fairy Development. All rights reserved.
+ */
+-->
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
+    <!--
+        M2MAP-359. Registers view/frontend/tailwind with Hyvä's config generator so
+        the theme's Tailwind build reaches this module's templates. Hyvä dispatches
+        this event from its own generator and registers its own observer on it
+        (hyva-themes/magento2-theme-module src/etc/frontend/events.xml:26). Without
+        this entry every utility class appearing only in this package is absent from
+        the compiled CSS and the chat panel renders unpositioned - no console error,
+        no 404.
+    -->
+    <event name="hyva_config_generate_before">
+        <observer name="BlueFairy_SlackChatHyva" instance="BlueFairy\SlackChatHyva\Observer\RegisterModuleForHyvaConfig"/>
+    </event>
+</config>

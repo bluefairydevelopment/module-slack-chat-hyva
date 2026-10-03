@@ -1,0 +1,52 @@
+/**
+ * Copyright © 2026 Blue Fairy Development. All rights reserved.
+ *
+ * Tailwind source registration for BlueFairy_SlackChatHyva.
+ *
+ * Hyvä's Tailwind build scans the THEME, not this module. `npx hyva-sources`
+ * discovers this file - via Observer/RegisterModuleForHyvaConfig - and emits an
+ * @import for it into the theme's generated hyva-source.css. That @import is
+ * necessary and NOT sufficient: it brings in THIS FILE'S CONTENT, and what puts
+ * the module's own templates into Tailwind's content scan is the @source glob at
+ * the bottom. BlueFairy_JiraHyva shipped this file without one and the @import
+ * imported a comment (M2MAP-474).
+ *
+ * Without the glob the utilities used only here are absent at runtime and the
+ * element renders as though the class were never written: silently, with no
+ * console error and no 404. M2MAP-359 measured it on hyvatest against
+ * Hyvä/default in that sibling package - 43 of 110 distinct classes emitted no
+ * CSS; a button with padding-top 0px, gap: normal, flex-shrink 1. For this
+ * widget a purged `fixed`, `bottom-4` or `z-50` would drop the chat panel into
+ * the document flow at the foot of every page.
+ *
+ * AFTER INSTALLING OR UPGRADING THIS MODULE the merchant must rebuild the theme's
+ * CSS (`npm run build` in the theme's web/tailwind directory). Registration alone
+ * changes nothing until the build runs - measured on hyvatest, where
+ * free-gift-hyva was correctly registered and its classes were still missing
+ * because nobody had rebuilt since installing it. README.md says so under a
+ * heading calling the step not optional.
+ *
+ * No @source inline(...) safelist is needed. The :class bindings in
+ * widget.phtml (bannerClass, message.rowClass, message.bubbleClass,
+ * message.statusClass) return class strings written as literals in
+ * chat-js.phtml - the ROW_CLASS, BUBBLE_CLASS and BANNER_CLASS tables and the
+ * two STATUS_*_CLASS constants - and the glob below scans that file too.
+ * Measured: 4 of 4 bindings covered, 0 classes reachable only from computed
+ * values.
+ *
+ * NO @apply AND NO @layer components HERE. Utilities are written in the
+ * templates. This file is read by Tailwind v4 themes (Hyvä 1.4+, where
+ * hyva-sources imports it); Tailwind v3 themes read tailwind.config.js beside
+ * it instead, and would never see a component layer declared here.
+ *
+ * [x-cloak] is declared because the panel and the unread badge start hidden by
+ * x-cloak alone, and a theme that does not ship the rule would flash the open
+ * panel on every page before Alpine starts. Hyvä/default declares the same rule;
+ * declaring it twice is harmless.
+ */
+
+@source "../templates/**/*.phtml";
+
+[x-cloak] {
+    display: none !important;
+}

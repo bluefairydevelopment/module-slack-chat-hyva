@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<!--
+/**
+ * Copyright © 2026 Blue Fairy Development. All rights reserved.
+ */
+-->
+<!--
+    BELT AND BRACES for the widget's one inline script (view/frontend/templates/chat-js.phtml).
+
+    On a Hyvä theme-module 1.3.11+ the script is already allowed per response:
+    HyvaCsp::registerInlineScript() adds its sha256 to the header on full-page-cacheable
+    pages and a nonce on the rest (src/ViewModel/HyvaCsp.php:118-129). The script also
+    carries Magento's own nonce. This static hash covers what neither does: a Hyvä
+    1.3.0-1.3.10 store running Magento_Csp in restrict mode, and a page served from a
+    cache that kept the HTML but not the header that matched its nonce.
+
+    The value is the base64 sha256 of the exact bytes between the opening <script ...>
+    tag and </script>. The body contains no PHP, so it is identical on every page and
+    survives Magento's HTML minifier unchanged. Test/Unit/Csp/InlineScriptHashTest
+    renders the template, extracts the body the way Hyvä does, and fails if this value
+    does not match - so editing the script without updating this line goes red.
+
+    Magento renders hashes only when the policy does not allow 'unsafe-inline'
+    (Magento\Csp\Model\Policy\FetchPolicy::getValue), so on a permissive store this
+    entry changes nothing.
+-->
+<csp_whitelist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Csp/etc/csp_whitelist.xsd">
+    <policies>
+        <policy id="script-src">
+            <values>
+                <value id="bfslc-hyva-chat-js" type="hash" algorithm="sha256">wRGAxs1kp7JAf+DLXWOlG95wy2avOKAaMyf/VhQLzVs=</value>
+            </values>
+        </policy>
+    </policies>
+</csp_whitelist>

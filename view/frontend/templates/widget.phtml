@@ -1,0 +1,174 @@
+<?php
+/**
+ * Copyright © 2026 Blue Fairy Development. All rights reserved.
+ *
+ * The Hyvä chat widget: a bubble and a non-modal dialog panel.
+ *
+ * Rendered on every page through hyva_default.xml and so cached with every page:
+ * the markup and the data-bfslc-config attribute are the same for every visitor
+ * (WidgetViewModel says what may and may not go into them). Nothing is fetched
+ * until the visitor opens the bubble.
+ *
+ * Alpine directives here are CSP-build safe: each one names a property, getter
+ * or method of the bfslcChat component (chat-js.phtml) and nothing else - no
+ * operators, no arguments, no assignments, no x-model. Static labels are printed
+ * by PHP (escaped) rather than bound, so they need no directive at all.
+ * Messages are rendered with x-text only.
+ */
+
+declare(strict_types=1);
+
+use BlueFairy\SlackChatHyva\ViewModel\WidgetViewModel;
+use Magento\Framework\Escaper;
+use Magento\Framework\View\Element\Template;
+
+/** @var Template $block */
+/** @var Escaper $escaper */
+
+$viewModel = $block->getData('view_model');
+if (!$viewModel instanceof WidgetViewModel || !$viewModel->isEnabled()) {
+    return;
+}
+
+$bootConfig = $viewModel->getBootConfig();
+/** @var array<string, string> $i18n */
+$i18n = $bootConfig['i18n'];
+$json = (string) json_encode($bootConfig, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+?>
+<div class="fixed bottom-4 right-4 z-50 flex flex-col items-end gap-3 print:hidden"
+     x-data="bfslcChat"
+     data-bfslc-config="<?= $escaper->escapeHtmlAttr($json) ?>">
+    <section id="bfslc-panel"
+             role="dialog"
+             aria-modal="false"
+             aria-labelledby="bfslc-title"
+             x-show="isOpen"
+             x-cloak
+             @keydown.escape="close"
+             class="flex flex-col w-[calc(100vw-2rem)] max-w-sm h-[32rem] max-h-[calc(100vh-6rem)] bg-white text-gray-900 rounded-lg shadow-xl border border-gray-200 overflow-hidden">
+        <header class="flex items-center justify-between gap-2 px-4 py-3 bg-gray-900 text-white">
+            <h2 id="bfslc-title" class="text-base font-semibold"><?= $escaper->escapeHtml($i18n['title']) ?></h2>
+            <div class="flex items-center gap-3">
+                <button type="button"
+                        x-show="hasSession"
+                        @click="endChat"
+                        class="text-xs underline hover:no-underline focus:outline-none focus-visible:ring-2 focus-visible:ring-white rounded">
+                    <?= $escaper->escapeHtml($i18n['endChat']) ?>
+                </button>
+                <button type="button"
+                        @click="close"
+                        aria-label="<?= $escaper->escapeHtmlAttr($i18n['close']) ?>"
+                        class="inline-flex items-center justify-center w-8 h-8 rounded-full hover:bg-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-white">
+                    <svg aria-hidden="true" focusable="false" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M4.3 4.3a1 1 0 0 1 1.4 0L10 8.6l4.3-4.3a1 1 0 1 1 1.4 1.4L11.4 10l4.3 4.3a1 1 0 0 1-1.4 1.4L10 11.4l-4.3 4.3a1 1 0 0 1-1.4-1.4L8.6 10 4.3 5.7a1 1 0 0 1 0-1.4Z" clip-rule="evenodd"/>
+                    </svg>
+                </button>
+            </div>
+        </header>
+
+        <p x-show="hasBanner" x-text="bannerText" :class="bannerClass" data-bfslc-banner></p>
+
+        <div x-ref="log"
+             role="log"
+             aria-live="polite"
+             aria-relevant="additions"
+             class="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+            <p x-show="hasNoMessages" class="text-sm text-gray-600"><?= $escaper->escapeHtml($i18n['intro']) ?></p>
+            <template x-for="message in messages" :key="message.key">
+                <div :class="message.rowClass" data-bfslc-message>
+                    <div :class="message.bubbleClass">
+                        <p class="text-xs font-semibold mb-1" x-text="message.authorLabel"></p>
+                        <p class="text-sm whitespace-pre-wrap break-words" x-show="message.hasBody" x-text="message.body"></p>
+                        <p class="text-sm break-all" x-show="message.hasAttachment">
+                            <button type="button"
+                                    x-show="message.canDownload"
+                                    @click="openAttachment"
+                                    class="underline hover:no-underline text-left"
+                                    x-text="message.attachmentLabel"></button>
+                            <span x-show="message.isPendingFile" x-text="message.attachmentLabel"></span>
+                        </p>
+                    </div>
+                    <p x-show="message.hasStatus" :class="message.statusClass">
+                        <span x-text="message.statusLabel"></span>
+                        <button type="button"
+                                x-show="message.isFailed"
+                                @click="retry"
+                                class="ml-2 underline font-semibold">
+                            <?= $escaper->escapeHtml($i18n['retry']) ?>
+                        </button>
+                    </p>
+                </div>
+            </template>
+        </div>
+
+        <p x-show="hasNotice" x-text="notice" role="alert" class="px-4 py-2 text-sm text-red-700 bg-red-50"></p>
+
+        <form @submit.prevent="send" class="border-t border-gray-200 p-3 space-y-2">
+            <div x-show="needsIntro" class="grid grid-cols-1 gap-1">
+                <label for="bfslc-name" class="text-xs font-medium text-gray-700"><?= $escaper->escapeHtml($i18n['nameLabel']) ?></label>
+                <input id="bfslc-name"
+                       type="text"
+                       autocomplete="name"
+                       maxlength="100"
+                       :value="displayName"
+                       @input="onNameInput"
+                       class="w-full rounded border border-gray-300 px-2 py-1 text-sm">
+                <label for="bfslc-email" class="text-xs font-medium text-gray-700"><?= $escaper->escapeHtml($i18n['emailLabel']) ?></label>
+                <input id="bfslc-email"
+                       type="email"
+                       autocomplete="email"
+                       maxlength="254"
+                       :value="email"
+                       @input="onEmailInput"
+                       class="w-full rounded border border-gray-300 px-2 py-1 text-sm">
+            </div>
+            <label for="bfslc-message" class="sr-only"><?= $escaper->escapeHtml($i18n['messageLabel']) ?></label>
+            <textarea id="bfslc-message"
+                      x-ref="input"
+                      rows="2"
+                      maxlength="4000"
+                      placeholder="<?= $escaper->escapeHtmlAttr($i18n['placeholder']) ?>"
+                      :value="draft"
+                      @input="onDraftInput"
+                      @keydown.enter="onEnter"
+                      class="w-full resize-none rounded border border-gray-300 px-2 py-1 text-sm"></textarea>
+            <div class="flex items-center justify-between gap-2">
+                <div x-show="uploadsEnabled">
+                    <input id="bfslc-file"
+                           x-ref="file"
+                           type="file"
+                           class="sr-only"
+                           :accept="acceptList"
+                           @change="onFileChosen">
+                    <label for="bfslc-file"
+                           class="cursor-pointer text-sm underline hover:no-underline text-gray-700">
+                        <?= $escaper->escapeHtml($i18n['attach']) ?>
+                    </label>
+                </div>
+                <button type="submit"
+                        :disabled="sendDisabled"
+                        class="ml-auto rounded bg-gray-900 px-4 py-1.5 text-sm font-semibold text-white hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                    <?= $escaper->escapeHtml($i18n['send']) ?>
+                </button>
+            </div>
+        </form>
+    </section>
+
+    <button type="button"
+            x-ref="bubble"
+            @click="toggle"
+            :aria-expanded="ariaExpanded"
+            aria-expanded="false"
+            aria-controls="bfslc-panel"
+            aria-label="<?= $escaper->escapeHtmlAttr($i18n['open']) ?>"
+            class="relative inline-flex items-center justify-center w-14 h-14 rounded-full bg-gray-900 text-white shadow-lg hover:bg-gray-700 focus:outline-none focus-visible:ring-4 focus-visible:ring-blue-500">
+        <svg aria-hidden="true" focusable="false" class="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M8 10h8M8 14h5m-9 6 2.6-2.6A2 2 0 0 1 8 17h10a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v14Z"/>
+        </svg>
+        <span x-show="hasUnread"
+              x-text="unreadCount"
+              x-cloak
+              class="absolute -top-1 -right-1 min-w-[1.25rem] h-5 px-1 rounded-full bg-red-600 text-white text-xs font-bold leading-5 text-center"></span>
+    </button>
+    <?= /* @noEscape */ $block->getChildHtml('bluefairy.slc.widget.hyva.js') ?>
+</div>

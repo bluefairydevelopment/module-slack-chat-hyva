@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Unit tests for bluefairy/module-slack-chat-hyva.
+
+    Run from the package root, with MAGENTO_ROOT pointing at a Magento install whose
+    vendor/ carries the framework, Magento_Csp and the Hyvä theme-module:
+
+        MAGENTO_ROOT=~/Sites/magento-vanilla \
+            ~/Sites/magento-vanilla/vendor/bin/phpunit -c phpunit.xml.dist
+
+    The base package's classes are read from a sibling checkout
+    (../module-slack-chat) when there is one - see Test/bootstrap.php.
+
+    The suite runs on PHPUnit 9.6 (Magento 2.4.8) AND 12 (2.4.9): data providers are
+    declared twice, as a docblock annotation (9.6) and an attribute (12), and nothing
+    uses getMockForAbstractClass() or MockBuilder::addMethods(), which 12 removed.
+-->
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/9.6/phpunit.xsd"
+         bootstrap="Test/bootstrap.php"
+         colors="true"
+         beStrictAboutTestsThatDoNotTestAnything="true"
+         failOnWarning="true"
+         failOnRisky="true">
+    <testsuites>
+        <testsuite name="BlueFairy_SlackChatHyva">
+            <directory>Test/Unit</directory>
+        </testsuite>
+    </testsuites>
+</phpunit>

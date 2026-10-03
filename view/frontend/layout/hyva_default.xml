@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<!--
+/**
+ * Copyright © 2026 Blue Fairy Development. All rights reserved.
+ */
+-->
+<!--
+    WHY hyva_default.xml AND NOT default.xml (M2MAP-249).
+
+    A layout file named default.xml applies on EVERY theme. This package's
+    templates are Alpine components that only work where Hyvä loads Alpine, so a
+    default.xml here would put a dead chat bubble on a Luma store view - and remove
+    the working Luma widget there at the same time.
+
+    Hyvä adds a hyva_-prefixed copy of every page handle, but only when the current
+    theme is a Hyvä theme: Hyva\Theme\Observer\AddLayoutHandles::execute()
+    (hyva-themes/magento2-theme-module src/Observer/AddLayoutHandles.php:60-65,
+    on layout_load_before). `default` is always among the handles, so hyva_default
+    applies on every page of a Hyvä store view and on no page of a Luma one. The
+    same mistake was made and measured in module-packagist-provisioner-hyva, whose
+    six un-prefixed layout files served Alpine templates to Luma shoppers.
+
+    The block replaces the base module's Luma widget rather than sitting beside it:
+    on a Hyvä store the base package's default.xml still declares
+    bluefairy.slc.widget.luma (RequireJS, which Hyvä does not load), so it is
+    removed here. Removal is resolved after all layout files are merged, so it holds
+    whichever module's file is read first.
+
+    before.body.end is declared by Magento_Theme (view/frontend/layout/default.xml)
+    and is where Hyvä itself mounts Alpine.
+-->
+<page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
+    <body>
+        <referenceBlock name="bluefairy.slc.widget.luma" remove="true"/>
+        <referenceContainer name="before.body.end">
+            <block class="Magento\Framework\View\Element\Template"
+                   name="bluefairy.slc.widget.hyva"
+                   template="BlueFairy_SlackChatHyva::widget.phtml">
+                <arguments>
+                    <argument name="view_model" xsi:type="object">BlueFairy\SlackChatHyva\ViewModel\WidgetViewModel</argument>
+                </arguments>
+                <!-- The component script, once per page, inside the component root. -->
+                <block class="Magento\Framework\View\Element\Template"
+                       name="bluefairy.slc.widget.hyva.js"
+                       template="BlueFairy_SlackChatHyva::chat-js.phtml">
+                    <arguments>
+                        <argument name="view_model" xsi:type="object">BlueFairy\SlackChatHyva\ViewModel\WidgetViewModel</argument>
+                    </arguments>
+                </block>
+            </block>
+        </referenceContainer>
+    </body>
+</page>

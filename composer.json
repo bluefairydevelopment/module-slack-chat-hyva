@@ -1,16 +1,17 @@
 {
     "name": "bluefairy/module-slack-chat-hyva",
-    "description": "BlueFairy Slack Live Chat — Hyva/Alpine.js frontend widget for the core module.",
+    "description": "BlueFairy Slack Live Chat - Hyva storefront widget (Alpine.js, CSP-safe) for bluefairy/module-slack-chat.",
     "type": "magento2-module",
     "license": [
         "proprietary"
     ],
     "require": {
-        "php": "^8.1|^8.2|^8.3",
-        "bluefairy/module-slack-chat": "^1.0"
-    },
-    "suggest": {
-        "hyva-themes/magento2-default-theme": "Recommended: Hyva base theme"
+        "php": "~8.3.0||~8.4.0||~8.5.0",
+        "magento/framework": "^103.0.8",
+        "magento/module-csp": "^100.4.7",
+        "magento/module-store": "^101.1",
+        "bluefairy/module-slack-chat": "^1.0",
+        "hyva-themes/magento2-theme-module": "^1.3"
     },
     "autoload": {
         "files": [
