@@ -49,9 +49,10 @@
 # GitHub's UI all bypass it. It stops the honest mistake - tagging over a red suite
 # without noticing.
 #
-# CONTROL: NOT YET RUN for this package. The control is to push a tag over a planted
-# red test to a throwaway bare remote and watch this hook refuse it; the control is
-# recorded in CHANGELOG.md once run. Re-run it whenever this file changes - a release
+# CONTROL RUN 2026-10-03 on clean clones pushed to throwaway bare remotes: a clean tag
+# passed every gate and landed;
+# a planted failing node test was refused at node-test before phpunit started, and an empty Test/Js was refused - the tag never
+# reached the remote. Recorded in CHANGELOG.md. Re-run it whenever this file changes - a release
 # gate never seen to refuse is an untested instrument.
 
 set -u

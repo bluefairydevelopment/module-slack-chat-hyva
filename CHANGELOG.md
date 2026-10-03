@@ -86,8 +86,9 @@ All notable changes to this package are documented in this file.
 - README: the Private Packagist repository and `auth.json` step before `composer require`, and
   the behaviour above.
 - Release gate: `.githooks/pre-push` also runs the widget's JavaScript suite
-  (`node --test Test/Js/*.test.cjs`) on a tag push. The planted-red control is recorded here
-  once it has been run.
+  (`node --test Test/Js/*.test.cjs`) on a tag push. Control run 2026-10-03 on a clean clone: a
+  clean tag passed every gate; a tag over a failing node test was refused before phpunit and
+  never reached the remote; a tree with no Test/Js files was refused.
 
 ### Changed in review round 2b
 - The stream listener for `expired` is gone: the store ends a stream whose slot could not be
