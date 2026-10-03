@@ -48,7 +48,7 @@ const I18N = {
     ended: 'This conversation has ended.', rateLimited: 'Too fast', unavailable: 'Unavailable',
     tooLarge: 'Too large', typeNotAllowed: 'Type not allowed', uploadsOff: 'Uploads off',
     fileEmpty: 'The file is empty.', unread: '%1 unread', genericError: 'Oops',
-    notDeliveredRetrying: 'Not delivered yet. We will keep trying for about 45 minutes.', notDelivered: 'Not delivered.',
+    notDeliveredRetrying: 'Not delivered yet. We will keep trying for about 48 minutes.', notDelivered: 'Not delivered.',
     uploadLimit: 'Upload limit reached', uploadQuota: 'Upload quota reached', storageFull: 'Storage full',
 };
 
@@ -474,7 +474,7 @@ test('delivery states read as the server now behaves; Retry only where a resend 
     const [pending, retrying, done, lost] = h.c.messages;
     assert.equal(pending.statusLabel, 'Sending to our team…');
     assert.equal(pending.canRetry, false);
-    assert.equal(retrying.statusLabel, 'Not delivered yet. We will keep trying for about 45 minutes.');
+    assert.equal(retrying.statusLabel, 'Not delivered yet. We will keep trying for about 48 minutes.');
     assert.equal(retrying.canRetry, false, 'the server is still retrying; a visitor Retry would post a duplicate');
     assert.equal(done.statusLabel, '');
     assert.equal(done.hasStatus, false);
@@ -512,7 +512,7 @@ test('a status change re-sent over the stream redraws the message; delivered is 
     const frame = (raw) => h.sources[0].listeners.message({ data: JSON.stringify(raw) });
     frame(Object.assign(out(4, 'mine', 'failed'), { retrying: true }));
     assert.equal(h.c.messages.length, 1, 'a re-sent frame added a second copy');
-    assert.equal(h.c.messages[0].statusLabel, 'Not delivered yet. We will keep trying for about 45 minutes.');
+    assert.equal(h.c.messages[0].statusLabel, 'Not delivered yet. We will keep trying for about 48 minutes.');
     frame(out(4, 'mine', 'delivered'));
     assert.equal(h.c.messages[0].statusLabel, '');
     frame(out(4, 'mine', 'pending'));
@@ -621,7 +621,7 @@ test('a pending message is re-fetched every 30 s from its id until it is deliver
     await h.fireTimeouts(30000);
     const refetch = h.calls.filter((x) => x.path === 'messages').pop();
     assert.equal(refetch.body.afterId, 3, 'the re-fetch does not start just below the lowest unsettled id');
-    assert.equal(h.c.messages[1].statusLabel, 'Not delivered yet. We will keep trying for about 45 minutes.');
+    assert.equal(h.c.messages[1].statusLabel, 'Not delivered yet. We will keep trying for about 48 minutes.');
     assert.deepEqual(h.timeoutMs(), [30000], 'a failed message stopped being re-fetched while the server still retries');
 
     state = 'delivered';
@@ -654,7 +654,7 @@ test('a message sent more than 60 minutes ago is no longer waited on', async () 
         : p === 'messages' ? items(Object.assign(out(4, 'old', 'failed'), { created_at: old, retrying: true })) : [500, null]), { token: TOKEN });
     h.c.open();
     await settle();
-    assert.equal(h.c.messages[0].statusLabel, 'Not delivered yet. We will keep trying for about 45 minutes.');
+    assert.equal(h.c.messages[0].statusLabel, 'Not delivered yet. We will keep trying for about 48 minutes.');
     assert.deepEqual(h.timeoutMs(), [], 'a 61-minute-old message is still re-fetched');
 
     const k = setup((p) => (p === 'session/status' ? active(TOKEN)
@@ -680,7 +680,7 @@ test('a failed message without a retrying field is taken as still retrying: no R
     await settle();
     const [unknown, lost] = h.c.messages;
     assert.equal('retrying' in out(4, 'x', 'failed'), false, 'CONTROL: the specimen really lacks the field');
-    assert.equal(unknown.statusLabel, 'Not delivered yet. We will keep trying for about 45 minutes.');
+    assert.equal(unknown.statusLabel, 'Not delivered yet. We will keep trying for about 48 minutes.');
     assert.equal(unknown.canRetry, false, 'a message of unknown retry state offers a duplicating resend');
     assert.deepEqual(h.timeoutMs(), [30000], 'a message of unknown retry state is not re-fetched');
     assert.equal(lost.canRetry, true, 'CONTROL: an explicit retrying=false does offer Retry');

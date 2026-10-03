@@ -27,7 +27,7 @@ All notable changes to this package are documented in this file.
     answer for an ended conversation never touches its replacement; a 400 `bfslc_invalid_token`
     is treated like 401/410;
   - delivery wording matches the store's retrying outbox: "Sending to our team…" while pending,
-    "Not delivered yet. We will keep trying for about 45 minutes." while the store retries (a
+    "Not delivered yet. We will keep trying for about 48 minutes." while the store retries (a
     message without the `retrying` field counts as retrying), "Not delivered." once it gives up;
     status changes re-sent over the stream are merged by id and "delivered" is final; while any
     of the visitor's messages is pending or retrying the open, visible panel re-fetches from the
