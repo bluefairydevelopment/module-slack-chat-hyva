@@ -135,12 +135,14 @@ always inserted as text, never as HTML.
   text message the store has given up on ("Not delivered."), which is sent again as a new one -
   also when that message had itself been re-sent into a new conversation. No Retry is offered
   when retrying cannot help (`bfslc_upload_limit`: the conversation already holds all the files
-  it may). After a 429 or 503 refusal the Retry button stays disabled for as many seconds as the
-  store's `Retry-After` header asks.
+  it may), nor on a file the store refused for itself (`bfslc_file_too_large`, `bfslc_bad_mime`,
+  `bfslc_file_empty`). After a 429 or 503 refusal the Retry button stays disabled for as many
+  seconds as the store's `Retry-After` header asks.
 - **Refusals say why.** A refusal the store explains (a 4xx answer with a known error code, for
   example `bfslc_invalid_email` for an address it does not accept) shows the store's own message;
-  a server error (5xx) shows the generic "Something went wrong. Please try again." text. The
-  name and email fields allow what the store allows: 120 and 255 characters.
+  a 503 reads "Chat is unavailable right now." and any other server error (5xx) the generic
+  "Something went wrong. Please try again." text. The name and email fields allow what the
+  store allows: 120 and 255 characters.
 - **A conversation that ended is restarted, and the visitor is told.** A message sent into a
   conversation that has meanwhile ended (401/410) starts a new one and is sent there once, with
   the note "Your previous conversation had ended, so this message started a new one."
@@ -148,14 +150,17 @@ always inserted as text, never as HTML.
   a reconnect after that is answered at once with the same `idle` event, never refused). From
   then on an open panel in a visible tab asks for new messages **every 60 seconds**, so a late
   reply from the team still arrives, and the closed panel keeps its 30-second check for the
-  unread badge. Sending, reopening the panel or returning to the tab reconnects the stream at
-  once. If the same conversation is open in another tab, the newer tab takes the stream
+  unread badge. A check that brings a new message reconnects the stream at once, and so do
+  sending, reopening the panel or returning to the tab. When the store ends a stream with
+  `reconnecting` (its slot could not be renewed), the widget reconnects at once from the newest
+  message held; a stream that ends that way within 10 seconds of opening is treated as refused
+  (3-second checks, the stream tried again after 60 seconds). If the same conversation is open in another tab, the newer tab takes the stream
   (`superseded`) and this one polls every 30 seconds while its panel is open, until the visitor
   sends from it: then it takes the stream back.
 - **One tab's ending never touches another's conversation.** Ending a conversation forgets the
   stored token only if it is still that conversation's, so a newer conversation started in
   another tab is kept.
-- One inline script, about 43 KB uncompressed (about 8 KB gzipped), parsed but idle until
+- One inline script, about 49 KB uncompressed (about 9 KB gzipped), parsed but idle until
   Alpine starts. No external JavaScript, no web fonts, no images (the icons are inline SVG).
 - The bubble and panel are `position: fixed`, so they cause no layout shift.
 - The bubble has an accessible name that includes the unread count, the panel is a labelled
@@ -165,8 +170,10 @@ always inserted as text, never as HTML.
   keyboard focus ring. Inputs use a 16 px font, so iOS Safari does not zoom the page when one
   is focused.
 - **Attachments differ from the Luma widget on purpose.** A file in the conversation shows a
-  **Download** button that fetches it (with the conversation's token) only when clicked; the
-  Luma widget previews images inline. Nothing is downloaded until the visitor asks.
+  **Download** button that fetches it (with the conversation's token) only when clicked; nothing
+  is downloaded until the visitor asks. The Luma widget shows images inline, fetching each when
+  it scrolls into view, and other files as the same kind of button. The base package's README
+  lists every remaining difference between the two widgets.
 
 ## Troubleshooting
 

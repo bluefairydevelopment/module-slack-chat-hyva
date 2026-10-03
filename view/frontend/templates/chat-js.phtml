@@ -61,10 +61,10 @@
  * slot) closes it; this tab then polls every 30 seconds rather than take the slot
  * back and start a tug of war - until the visitor sends from it, which makes it
  * the tab being talked in. `event: reconnecting` (the server's
- * StreamRunner::EVENT_RECONNECTING: the stream's slot lease expired; `expired` is
- * heard too, the name it was first briefed as) reconnects at once from the newest
- * id held, unless the stream lived under 10 seconds, which is treated as a
- * refusal (3-second poll, stream again in 60 seconds).
+ * StreamRunner::EVENT_RECONNECTING: the stream's slot lease expired and could not
+ * be taken again; the server has no other name for it) reconnects at once from
+ * the newest id held, unless the stream lived under 10 seconds, which is treated
+ * as a refusal (3-second poll, stream again in 60 seconds).
  *
  * DELIVERY STATUSES SETTLE LATER. The stream and the poll only bring new ids, but
  * the server retries a failed Slack post for about 48 minutes. So while one of the
@@ -1288,19 +1288,17 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                         }
                     });
                 });
-                ['expired', 'reconnecting'].forEach(function (ending) {
-                    source.addEventListener(ending, function () {
-                        if (!current()) {
-                            return;
-                        }
-                        self.stopStream();
-                        if (openedAt > 0 && Date.now() - openedAt >= STREAM_HEALTHY_MS) {
-                            self.syncRealtime();
-                            return;
-                        }
-                        self.startPolling(POLL_MS);
-                        self.scheduleStreamRetry();
-                    });
+                source.addEventListener('reconnecting', function () {
+                    if (!current()) {
+                        return;
+                    }
+                    self.stopStream();
+                    if (openedAt > 0 && Date.now() - openedAt >= STREAM_HEALTHY_MS) {
+                        self.syncRealtime();
+                        return;
+                    }
+                    self.startPolling(POLL_MS);
+                    self.scheduleStreamRetry();
                 });
                 source.onerror = function () {
                     if (!current() || source.readyState !== window.EventSource.CLOSED) {

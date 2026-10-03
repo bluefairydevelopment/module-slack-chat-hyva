@@ -796,35 +796,43 @@ test('W6: a superseded tab takes the stream back when the visitor sends from it'
     assert.deepEqual(h.intervalMs(), []);
 });
 
-for (const ending of ['expired', 'reconnecting']) {
-    test(ending + ': a stream that ran is reconnected at once; one that ended at once falls back', async () => {
-        const h = setup((p) => (p === 'session/status' ? active(TOKEN) : items(inbound(4, 'x'))), { token: TOKEN });
-        h.c.open();
+test('reconnecting: a stream that ran is reconnected at once; one that ended at once falls back', async () => {
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : items(inbound(4, 'x'))), { token: TOKEN });
+    h.c.open();
+    await settle();
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => now;
+    try {
+        h.sources[0].listeners.open({});
+        now += 300000;
+        h.sources[0].listeners.reconnecting({});
         await settle();
-        const realNow = Date.now;
-        let now = realNow();
-        Date.now = () => now;
-        try {
-            h.sources[0].listeners.open({});
-            now += 300000;
-            h.sources[0].listeners[ending]({});
-            await settle();
-            assert.equal(h.sources[0].closed, true);
-            assert.equal(h.sources.length, 2, 'an expired stream was not reconnected');
-            assert.match(h.sources[1].url, /&after=4$/);
-            assert.deepEqual(h.intervalMs(), []);
-            h.sources[1].listeners.open({});
-            now += 2000;
-            h.sources[1].listeners[ending]({});
-            await settle();
-            assert.equal(h.sources.length, 2, 'a stream that expires at once is hammered');
-            assert.deepEqual(h.intervalMs(), [3000]);
-            assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [60000]);
-        } finally {
-            Date.now = realNow;
-        }
-    });
-}
+        assert.equal(h.sources[0].closed, true);
+        assert.equal(h.sources.length, 2, 'an expired stream was not reconnected');
+        assert.match(h.sources[1].url, /&after=4$/);
+        assert.deepEqual(h.intervalMs(), []);
+        h.sources[1].listeners.open({});
+        now += 2000;
+        h.sources[1].listeners.reconnecting({});
+        await settle();
+        assert.equal(h.sources.length, 2, 'a stream that expires at once is hammered');
+        assert.deepEqual(h.intervalMs(), [3000]);
+        assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [60000]);
+    } finally {
+        Date.now = realNow;
+    }
+});
+
+test('the stream listens for the events the server sends (StreamRunner::EVENT_*) and no other name', async () => {
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : items()), { token: TOKEN });
+    h.c.open();
+    await settle();
+    assert.equal(h.sources.length, 1, 'CONTROL: the open panel opened a stream');
+    assert.deepEqual(Object.keys(h.sources[0].listeners).sort(), ['closed', 'idle', 'message', 'open', 'reconnecting', 'superseded']);
+    assert.equal(typeof h.sources[0].listeners.reconnecting, 'function');
+    assert.equal(h.sources[0].listeners.expired, undefined, 'a listener for an event the server never sends');
+});
 
 test('W3/D6: a refused email shows the server\'s words, keeps the intro fields, and Retry uses the fix', async () => {
     const h = setup((p, body) => (p === 'availability/0' ? [200, {}]

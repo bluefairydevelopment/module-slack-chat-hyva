@@ -89,6 +89,16 @@ All notable changes to this package are documented in this file.
   (`node --test Test/Js/*.test.cjs`) on a tag push. The planted-red control is recorded here
   once it has been run.
 
+### Changed in review round 2b
+- The stream listener for `expired` is gone: the store ends a stream whose slot could not be
+  renewed with `event: reconnecting` only (`StreamRunner::EVENT_RECONNECTING`), and the widget
+  now listens for exactly the events the store sends. A test pins the listener list.
+- `etc/csp_whitelist.xml`: the script's sha256 is now
+  `qBePWP5d+VF9qoDTrud5Qrhu3Jz0I5yI0bHlUFHicx8=` (the script changed).
+- README: the script is about 49 KB (about 9 KB gzipped), measured from the template; the
+  `reconnecting` ending, the 503 wording, the no-Retry file refusals and the Luma widget's
+  attachment handling described as they are.
+
 ### Development (not in the package a merchant installs)
 - Unit suite: view model (boot-config key set, nothing per visitor, excluded pages, nonce),
   observer and its subscription, layout (hyva_-only, adds the Hyvä block, removes the Luma one),
