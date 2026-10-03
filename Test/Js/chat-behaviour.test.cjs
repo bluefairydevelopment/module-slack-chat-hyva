@@ -43,11 +43,13 @@ const TOKEN = 'a'.repeat(64);
 const TOKEN2 = 'b'.repeat(64);
 const I18N = {
     open: 'Open chat', you: 'You', agent: 'Support', system: 'Notice', sending: 'Sending...',
-    notSent: 'Not sent', notDelivered: 'Not delivered yet. We will keep trying for a while.',
+    notSent: 'Not sent',
     deliveryPending: 'Sending to our team…', retry: 'Retry', download: 'Download',
     ended: 'This conversation has ended.', rateLimited: 'Too fast', unavailable: 'Unavailable',
     tooLarge: 'Too large', typeNotAllowed: 'Type not allowed', uploadsOff: 'Uploads off',
     fileEmpty: 'The file is empty.', unread: '%1 unread', genericError: 'Oops',
+    notDeliveredRetrying: 'Not delivered yet. We will keep trying for about 45 minutes.', notDelivered: 'Not delivered.',
+    uploadLimit: 'Upload limit reached', uploadQuota: 'Upload quota reached', storageFull: 'Storage full',
 };
 
 /**
@@ -463,24 +465,143 @@ test('a restRoot without a trailing slash still reaches the right routes, with X
 
 /* ------------------------------------------------------- delivery wording */
 
-test('delivery states read as the server now behaves; only an unsent message offers Retry', async () => {
+test('delivery states read as the server now behaves; Retry only where a resend cannot duplicate', async () => {
     const h = setup((p) => (p === 'session/status' ? active(TOKEN)
-        : p === 'messages' ? items(out(1, 'queued', 'pending'), out(2, 'stuck', 'failed'), out(3, 'done', 'delivered')) : [500, null]), { token: TOKEN });
+        : p === 'messages' ? items(out(1, 'queued', 'pending'), Object.assign(out(2, 'stuck', 'failed'), { retrying: true }),
+            out(3, 'done', 'delivered'), Object.assign(out(5, 'lost', 'failed'), { retrying: false })) : [500, null]), { token: TOKEN });
     h.c.open();
     await settle();
-    const [pending, failed, done] = h.c.messages;
+    const [pending, retrying, done, lost] = h.c.messages;
     assert.equal(pending.statusLabel, 'Sending to our team…');
-    assert.equal(failed.statusLabel, 'Not delivered yet. We will keep trying for a while.');
-    assert.equal(failed.isFailed, false, 'a server-side retry is pending; a visitor Retry would post a duplicate');
+    assert.equal(pending.canRetry, false);
+    assert.equal(retrying.statusLabel, 'Not delivered yet. We will keep trying for about 45 minutes.');
+    assert.equal(retrying.canRetry, false, 'the server is still retrying; a visitor Retry would post a duplicate');
     assert.equal(done.statusLabel, '');
     assert.equal(done.hasStatus, false);
+    assert.equal(lost.statusLabel, 'Not delivered.');
+    assert.equal(lost.canRetry, true, 'a message the server gave up on offers no Retry');
+    assert.equal(lost.isFailed, true);
 
     await sendText(h, 'refused');
-    const refused = h.c.messages[3];
+    const refused = h.c.messages[4];
     assert.equal(refused.statusLabel, 'Not sent: Oops');
-    assert.equal(refused.isFailed, true, 'a message the store never accepted lost its Retry');
+    assert.equal(refused.canRetry, true, 'a message the store never accepted lost its Retry');
 });
 
+test('Retry on a message the server gave up on sends it again once, as a new message', async () => {
+    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN)
+        : p === 'messages' ? items(Object.assign(out(5, 'lost', 'failed'), { retrying: false }))
+            : p === 'message' ? [200, out(6, body.body, 'pending')] : [500, null]), { token: TOKEN });
+    h.c.open();
+    await settle();
+    h.c.message = h.c.messages[0];
+    h.c.retry();
+    h.c.retry();
+    await settle();
+    const sent = h.calls.filter((x) => x.path === 'message');
+    assert.equal(sent.length, 1, 'a double click resent twice');
+    assert.equal(sent[0].body.body, 'lost');
+    assert.equal(h.c.messages[0].canRetry, false);
+    assert.equal(h.c.messages[1].id, 6);
+});
+
+test('a status change re-sent over the stream redraws the message; delivered is final', async () => {
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? items(out(4, 'mine', 'pending')) : [500, null]), { token: TOKEN });
+    h.c.open();
+    await settle();
+    const frame = (raw) => h.sources[0].listeners.message({ data: JSON.stringify(raw) });
+    frame(Object.assign(out(4, 'mine', 'failed'), { retrying: true }));
+    assert.equal(h.c.messages.length, 1, 'a re-sent frame added a second copy');
+    assert.equal(h.c.messages[0].statusLabel, 'Not delivered yet. We will keep trying for about 45 minutes.');
+    frame(out(4, 'mine', 'delivered'));
+    assert.equal(h.c.messages[0].statusLabel, '');
+    frame(out(4, 'mine', 'pending'));
+    assert.equal(h.c.messages[0].deliveryStatus, 'delivered', 'a late frame un-delivered a delivered message');
+    assert.equal(h.c.messages[0].hasStatus, false);
+});
+
+/* -------------------------------------------------- stream endings */
+
+test('event: idle closes the stream for good until a send, a reopen or the tab is shown', async () => {
+    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? [200, out(9, body.body)] : items()), { token: TOKEN });
+    h.c.open();
+    await settle();
+    h.sources[0].listeners.idle({});
+    await settle();
+    assert.equal(h.sources[0].closed, true, 'an idle stream was left open');
+    assert.deepEqual(h.intervalMs(), [], 'an idle conversation is polled');
+    assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [], 'an idle stream is scheduled to reconnect');
+    assert.equal(h.sources.length, 1);
+
+    await sendText(h, 'back again');
+    assert.equal(h.sources.length, 2, 'a send did not reconnect the idle stream');
+
+    h.sources[1].listeners.idle({});
+    await settle();
+    h.c.close();
+    await settle();
+    assert.deepEqual(h.intervalMs(), [], 'a closed panel polls an idle conversation');
+    h.c.open();
+    await settle();
+    assert.equal(h.sources.length, 3, 'a reopen did not reconnect');
+
+    h.sources[2].listeners.idle({});
+    await settle();
+    await h.setHidden(true);
+    await h.setHidden(false);
+    assert.equal(h.sources.length, 4, 'showing the tab did not reconnect');
+});
+
+test('event: superseded closes the stream and polls every 30 s while open, never reconnecting', async () => {
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : items()), { token: TOKEN });
+    h.c.open();
+    await settle();
+    h.sources[0].listeners.superseded({});
+    await settle();
+    assert.equal(h.sources[0].closed, true);
+    assert.deepEqual(h.intervalMs(), [30000], 'a superseded open panel does not poll every 30 s');
+    h.c.close();
+    await settle();
+    h.c.open();
+    await settle();
+    await h.setHidden(true);
+    await h.setHidden(false);
+    assert.equal(h.sources.length, 1, 'a superseded tab took the stream back');
+    assert.deepEqual(h.intervalMs(), [30000]);
+});
+
+test('an ending from a stream that is no longer current is ignored', async () => {
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : items()), { token: TOKEN });
+    h.c.open();
+    await settle();
+    const old = h.sources[0];
+    await h.setHidden(true);
+    await h.setHidden(false);
+    old.listeners.superseded({});
+    await settle();
+    assert.equal(h.sources[1].closed, false, 'a stale stream ending closed the current one');
+});
+
+/* ----------------------------------------------- upload refusals */
+
+test('upload refusals are explained by their error code; a 500 is generic', async () => {
+    const cases = [
+        [413, 'bfslc_upload_limit', 'Not sent: Upload limit reached'],
+        [429, 'bfslc_upload_quota', 'Not sent: Upload quota reached'],
+        [503, 'bfslc_storage_full', 'Not sent: Storage full'],
+        [500, 'bfslc_unavailable', 'Not sent: Oops'],
+        [413, 'bfslc_other', 'Not sent: Too large'],
+        [429, 'bfslc_rate_limited', 'Not sent: Too fast'],
+    ];
+    for (const [status, code, label] of cases) {
+        const h = setup((p) => (p === 'session' ? active(TOKEN) : p === 'upload' ? [status, { message: 'x', parameters: { error_code: code } }] : items()), {
+            FileReader: class { readAsDataURL() { this.result = 'data:image/png;base64,AAAA'; this.onload(); } },
+        });
+        h.c.onFileChosen({ target: { files: [{ name: 'a.png', type: 'image/png', size: 10 }], value: 'x' } });
+        await settle();
+        assert.equal(h.c.messages[0].statusLabel, label, status + ' ' + code);
+    }
+});
 /* ----------------------------- delivery statuses settle (Luma parity) */
 
 test('a pending message is re-fetched every 30 s from its id until it is delivered', async () => {
@@ -488,7 +609,7 @@ test('a pending message is re-fetched every 30 s from its id until it is deliver
     const h = setup((p, body) => {
         if (p === 'session/status') return active(TOKEN);
         if (p === 'messages' && body.afterId === 0) return items(inbound(3, 'hi'), out(4, 'mine', 'pending'));
-        if (p === 'messages') return items(out(4, 'mine', state));
+        if (p === 'messages') return items(Object.assign(out(4, 'mine', state), { retrying: state === 'failed' }));
         return [500, null];
     }, { token: TOKEN });
     h.c.open();
@@ -500,7 +621,7 @@ test('a pending message is re-fetched every 30 s from its id until it is deliver
     await h.fireTimeouts(30000);
     const refetch = h.calls.filter((x) => x.path === 'messages').pop();
     assert.equal(refetch.body.afterId, 3, 'the re-fetch does not start just below the lowest unsettled id');
-    assert.equal(h.c.messages[1].statusLabel, 'Not delivered yet. We will keep trying for a while.');
+    assert.equal(h.c.messages[1].statusLabel, 'Not delivered yet. We will keep trying for about 45 minutes.');
     assert.deepEqual(h.timeoutMs(), [30000], 'a failed message stopped being re-fetched while the server still retries');
 
     state = 'delivered';
@@ -510,7 +631,7 @@ test('a pending message is re-fetched every 30 s from its id until it is deliver
 });
 
 test('settling stops while the panel is closed or the tab hidden, and resumes when seen again', async () => {
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? items(out(4, 'mine', 'failed')) : [500, null]), { token: TOKEN });
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? items(Object.assign(out(4, 'mine', 'failed'), { retrying: true })) : [500, null]), { token: TOKEN });
     h.c.open();
     await settle();
     assert.deepEqual(h.timeoutMs(), [30000], 'CONTROL: settling is armed');
@@ -526,19 +647,41 @@ test('settling stops while the panel is closed or the tab hidden, and resumes wh
     assert.deepEqual(h.timeoutMs(), [30000]);
 });
 
-test('a message sent more than 50 minutes ago is no longer waited on', async () => {
-    const old = new Date(Date.now() - 51 * 60000).toISOString();
-    const recent = new Date(Date.now() - 49 * 60000).toISOString();
+test('a message sent more than 60 minutes ago is no longer waited on', async () => {
+    const old = new Date(Date.now() - 61 * 60000).toISOString();
+    const recent = new Date(Date.now() - 59 * 60000).toISOString();
     const h = setup((p) => (p === 'session/status' ? active(TOKEN)
-        : p === 'messages' ? items(Object.assign(out(4, 'old', 'failed'), { created_at: old })) : [500, null]), { token: TOKEN });
+        : p === 'messages' ? items(Object.assign(out(4, 'old', 'failed'), { created_at: old, retrying: true })) : [500, null]), { token: TOKEN });
     h.c.open();
     await settle();
-    assert.equal(h.c.messages[0].statusLabel, 'Not delivered yet. We will keep trying for a while.');
-    assert.deepEqual(h.timeoutMs(), [], 'a 51-minute-old message is still re-fetched');
+    assert.equal(h.c.messages[0].statusLabel, 'Not delivered yet. We will keep trying for about 45 minutes.');
+    assert.deepEqual(h.timeoutMs(), [], 'a 61-minute-old message is still re-fetched');
 
     const k = setup((p) => (p === 'session/status' ? active(TOKEN)
-        : p === 'messages' ? items(Object.assign(out(4, 'recent', 'failed'), { created_at: recent })) : [500, null]), { token: TOKEN });
+        : p === 'messages' ? items(Object.assign(out(4, 'recent', 'failed'), { created_at: recent, retrying: true })) : [500, null]), { token: TOKEN });
     k.c.open();
     await settle();
-    assert.deepEqual(k.timeoutMs(), [30000], 'CONTROL: a 49-minute-old one is');
+    assert.deepEqual(k.timeoutMs(), [30000], 'CONTROL: a 59-minute-old one is');
+});
+
+test('a message the server has given up on is final: no more re-fetching', async () => {
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN)
+        : p === 'messages' ? items(Object.assign(out(4, 'lost', 'failed'), { retrying: false })) : [500, null]), { token: TOKEN });
+    h.c.open();
+    await settle();
+    assert.equal(h.c.messages[0].statusLabel, 'Not delivered.', 'CONTROL: the message is the given-up one');
+    assert.deepEqual(h.timeoutMs(), [], 'a message the server gave up on is still re-fetched');
+});
+
+test('a failed message without a retrying field is taken as still retrying: no Retry, still re-fetched', async () => {
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN)
+        : p === 'messages' ? items(out(4, 'unknown', 'failed'), Object.assign(out(5, 'lost', 'failed'), { retrying: false })) : [500, null]), { token: TOKEN });
+    h.c.open();
+    await settle();
+    const [unknown, lost] = h.c.messages;
+    assert.equal('retrying' in out(4, 'x', 'failed'), false, 'CONTROL: the specimen really lacks the field');
+    assert.equal(unknown.statusLabel, 'Not delivered yet. We will keep trying for about 45 minutes.');
+    assert.equal(unknown.canRetry, false, 'a message of unknown retry state offers a duplicating resend');
+    assert.deepEqual(h.timeoutMs(), [30000], 'a message of unknown retry state is not re-fetched');
+    assert.equal(lost.canRetry, true, 'CONTROL: an explicit retrying=false does offer Retry');
 });

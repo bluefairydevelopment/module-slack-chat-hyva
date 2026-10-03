@@ -92,11 +92,16 @@ always inserted as text, never as HTML.
   While polling, every tenth request also checks whether the conversation has been closed.
 - **Delivery statuses settle on their own.** The store retries a message Slack refused for
   about 45 minutes, so while one of the visitor's messages reads "Sending to our team…" or
-  "Not delivered yet", the open panel re-checks it every 30 seconds (for at most 50 minutes,
-  never while closed or hidden) until it is delivered. Such a message offers no Retry: the
-  store is already retrying, and a second copy would reach Slack twice. Retry is offered only
-  on a message the store refused outright ("Not sent").
-- One inline script, about 40 KB uncompressed (about 7 KB gzipped), parsed but idle until
+  "Not delivered yet. We will keep trying for about 45 minutes.", the open panel re-checks it
+  every 30 seconds (for at most 60 minutes, never while closed or hidden) until it settles.
+  Such a message offers no Retry: the store is already retrying, and a second copy would reach
+  Slack twice. Retry is offered on a message the store refused outright ("Not sent"), and on a
+  text message the store has given up on ("Not delivered."), which is sent again as a new one.
+- **A stream can end for good.** After 30 minutes with nothing said the store ends the stream
+  (`idle`) and the widget does not reconnect until the visitor sends, reopens the panel or
+  returns to the tab. If the same conversation is open in another tab, the newer tab takes the
+  stream (`superseded`) and this one polls every 30 seconds while its panel is open.
+- One inline script, about 43 KB uncompressed (about 8 KB gzipped), parsed but idle until
   Alpine starts. No external JavaScript, no web fonts, no images (the icons are inline SVG).
 - The bubble and panel are `position: fixed`, so they cause no layout shift.
 - The bubble has an accessible name that includes the unread count, the panel is a labelled
@@ -113,7 +118,8 @@ always inserted as text, never as HTML.
 | Bubble shows but does nothing; console shows a CSP error | A custom CSP header replaced Magento's. Allow the hash in `etc/csp_whitelist.xml`, or Magento's nonce. |
 | Replies arrive with a few seconds' delay | The base package's concurrent-stream cap is full; the widget is polling every 3 seconds and will retry the stream every 60. |
 | The unread badge takes up to half a minute to appear | Expected: with the panel closed the widget checks every 30 seconds rather than holding a stream open (see Performance). |
-| A message reads "Not delivered yet. We will keep trying for a while." | The store saved it but Slack refused it or could not be reached. The store retries for about 45 minutes; check the Slack credentials and the cron. |
+| A message reads "Not delivered yet. We will keep trying for about 45 minutes." | The store saved it but Slack refused it or could not be reached. The store retries for about 45 minutes; check the Slack credentials and the cron. |
+| A message reads "Not delivered." | The store's retries ran out. The visitor can press Retry to send it again. |
 
 ## License
 

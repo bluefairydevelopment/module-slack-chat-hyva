@@ -50,12 +50,22 @@
  * every tenth poll also asks for the conversation's status, because the
  * messages endpoint answers 200 for a closed conversation and would never say so.
  *
+ * A STREAM CAN END FOR GOOD. `event: idle` (nothing said for 30 minutes; the
+ * server answers a reconnect with 204) closes it with no reconnect and no polling
+ * until the visitor sends, reopens the panel or shows the tab again.
+ * `event: superseded` (another tab took this conversation's one stream slot)
+ * closes it for the life of the page; this tab then polls every 30 seconds while
+ * the panel is open rather than take the slot back and start a tug of war.
+ *
  * DELIVERY STATUSES SETTLE LATER. The stream and the poll only bring new ids, but
  * the server retries a failed Slack post for about 45 minutes. So while one of the
- * visitor's messages is pending or failed (and was sent less than 50 minutes ago),
+ * visitor's messages is pending or failed (and was sent less than 60 minutes ago),
  * the open, visible panel re-fetches from the lowest such id every 30 seconds;
- * "delivered" is final. Only a message the store refused outright offers Retry -
- * a visitor resend of an undelivered one would reach Slack twice.
+ * "delivered" is final, and so is "failed" once the server says it is no longer
+ * retrying (retrying === false; a message without the field is taken as still
+ * retrying, so it never offers a resend that could reach Slack twice). Retry is offered on a message the store refused outright, and on a
+ * text message the server has given up on (it is sent again as a new message);
+ * never while the server is still retrying, or Slack would receive it twice.
  *
  * EVERY RESPONSE IS CHECKED AGAINST THE TOKEN IT WAS ASKED WITH. A response that
  * arrives after the conversation was ended or replaced is dropped, so a late
@@ -84,12 +94,17 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
     var TOKEN_PATTERN = /^[a-f0-9]{64}$/;
     var SESSION_GONE = [401, 410];
     var INVALID_TOKEN = 'bfslc_invalid_token';
+    var REFUSAL_LABEL = {
+        bfslc_upload_limit: 'uploadLimit',
+        bfslc_upload_quota: 'uploadQuota',
+        bfslc_storage_full: 'storageFull'
+    };
     var POLL_MS = 3000;
     var IDLE_POLL_MS = 30000;
     var STATUS_EVERY_N_POLLS = 10;
     var STREAM_RETRY_MS = 60000;
     var SETTLE_INTERVAL_MS = 30000;
-    var SETTLE_WINDOW_MS = 50 * 60000;
+    var SETTLE_WINDOW_MS = 60 * 60000;
     var HISTORY_PAGE = 200;
     var HISTORY_MAX_PAGES = 10;
 
@@ -241,6 +256,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             pollBusy: false,
             pollCount: 0,
             retryTimer: null,
+            streamEnd: '',
             unsettled: {},
             settleTimer: null,
             blobUrls: []
@@ -302,6 +318,9 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     }
                 });
                 document.addEventListener('visibilitychange', function () {
+                    if (!document.hidden) {
+                        self.wake();
+                    }
                     self.syncRealtime();
                 });
             },
@@ -354,6 +373,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             open() {
                 this.isOpen = true;
                 this.unreadCount = 0;
+                this.wake();
                 if (!this.booted) {
                     this.booted = true;
                     this.boot();
@@ -466,6 +486,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 rt.historyToken = '';
                 rt.pollCount = 0;
                 rt.unsettled = {};
+                rt.streamEnd = '';
             },
 
             accepted(token) {
@@ -474,6 +495,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 }
                 this.booted = true;
                 this.sessionStatus = 'active';
+                this.wake();
                 if (rt.historyToken !== token) {
                     this.catchUp(token);
                 } else {
@@ -566,7 +588,11 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 var dir = ROW_CLASS[msg.direction] ? msg.direction : 'system';
                 msg.rowClass = ROW_CLASS[dir];
                 msg.bubbleClass = BUBBLE_CLASS[dir];
-                msg.isFailed = msg.state === 'failed';
+                var undelivered = msg.direction === 'outbound' && msg.deliveryStatus === 'failed';
+                var givenUp = undelivered && !msg.retrying;
+                msg.isFailed = msg.state === 'failed' || givenUp;
+                msg.canRetry = msg.state === 'failed'
+                    || (givenUp && !msg.resent && msg.body !== '' && msg.attachmentUrl === '');
                 msg.canDownload = isAllowedAttachmentUrl(msg.attachmentUrl, rt.origins);
                 msg.hasAttachment = msg.attachmentName !== '' || msg.canDownload;
                 msg.isPendingFile = msg.hasAttachment && !msg.canDownload;
@@ -578,8 +604,10 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     msg.statusLabel = t('sending');
                 } else if (msg.state === 'failed') {
                     msg.statusLabel = t('notSent') + (msg.failReason !== '' ? ': ' + msg.failReason : '');
-                } else if (msg.direction === 'outbound' && msg.deliveryStatus === 'failed') {
+                } else if (givenUp) {
                     msg.statusLabel = t('notDelivered');
+                } else if (undelivered) {
+                    msg.statusLabel = t('notDeliveredRetrying');
                 } else if (msg.direction === 'outbound' && msg.deliveryStatus === 'pending') {
                     msg.statusLabel = t('deliveryPending');
                 } else {
@@ -602,6 +630,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     attachmentUrl: '',
                     attachmentName: name,
                     deliveryStatus: '',
+                    retrying: false,
                     state: 'sending',
                     failReason: '',
                     resent: false
@@ -610,6 +639,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
 
             apply(msg, raw) {
                 var dir = text(raw.direction);
+                var settled = msg.id > 0 && msg.id === toInt(raw.id) && msg.deliveryStatus === 'delivered';
                 msg.id = toInt(raw.id);
                 msg.direction = ROW_CLASS[dir] ? dir : 'system';
                 if (msg.direction === 'outbound') {
@@ -622,7 +652,10 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 msg.body = text(raw.body);
                 msg.attachmentUrl = text(raw.attachment_url);
                 msg.attachmentName = text(raw.attachment_name);
-                msg.deliveryStatus = text(raw.delivery_status);
+                if (!settled) {
+                    msg.deliveryStatus = text(raw.delivery_status);
+                    msg.retrying = raw.retrying !== false;
+                }
                 msg.state = 'sent';
                 msg.failReason = '';
                 this.decorate(msg);
@@ -632,7 +665,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
 
             track(msg, raw) {
                 var open = msg.direction === 'outbound'
-                    && (msg.deliveryStatus === 'pending' || msg.deliveryStatus === 'failed');
+                    && (msg.deliveryStatus === 'pending' || (msg.deliveryStatus === 'failed' && msg.retrying));
                 if (!open || msg.id <= 0) {
                     delete rt.unsettled[msg.id];
                     return;
@@ -742,6 +775,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     attachmentUrl: '',
                     attachmentName: '',
                     deliveryStatus: '',
+                    retrying: false,
                     state: 'sent',
                     failReason: '',
                     resent: false
@@ -791,13 +825,16 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 }
             },
 
-            fail(key, status, kind) {
+            fail(key, status, kind, data) {
                 var msg = this.byKey(key);
                 if (!msg) {
                     return;
                 }
                 var reason = t('genericError');
-                if (status === 429) {
+                var code = errorCode(data);
+                if (REFUSAL_LABEL[code] && t(REFUSAL_LABEL[code]) !== '') {
+                    reason = t(REFUSAL_LABEL[code]);
+                } else if (status === 429) {
                     reason = t('rateLimited');
                 } else if (status === 503) {
                     reason = t('unavailable');
@@ -862,7 +899,16 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
 
             retry() {
                 var msg = this.byKey(this.message.key);
-                if (!msg || msg.state !== 'failed') {
+                if (!msg || !msg.canRetry) {
+                    return;
+                }
+                if (msg.state !== 'failed') {
+                    msg.resent = true;
+                    this.decorate(msg);
+                    var copy = this.local('text', msg.body, '');
+                    this.messages.push(copy);
+                    this.enqueue(copy.key);
+                    this.scrollLog();
                     return;
                 }
                 msg.resent = false;
@@ -913,7 +959,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                         self.fail(key, 410, current.kind);
                         return null;
                     }
-                    self.fail(key, res.status, current.kind);
+                    self.fail(key, res.status, current.kind, res.data);
                     return null;
                 });
             },
@@ -1013,6 +1059,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     attachmentUrl: '',
                     attachmentName: '',
                     deliveryStatus: '',
+                    retrying: false,
                     state: 'sent',
                     failReason: '',
                     resent: false
@@ -1029,10 +1076,26 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     this.stopStream();
                     this.clearStreamRetry();
                     this.stopSettle();
-                    this.startPolling(IDLE_POLL_MS);
+                    if (rt.streamEnd === 'idle') {
+                        this.stopPolling();
+                    } else {
+                        this.startPolling(IDLE_POLL_MS);
+                    }
                     return;
                 }
                 this.scheduleSettle();
+                if (rt.streamEnd === 'idle') {
+                    this.stopStream();
+                    this.stopPolling();
+                    this.clearStreamRetry();
+                    return;
+                }
+                if (rt.streamEnd === 'superseded') {
+                    this.stopStream();
+                    this.clearStreamRetry();
+                    this.startPolling(IDLE_POLL_MS);
+                    return;
+                }
                 if (rt.es !== null || (rt.pollTimer !== null && rt.pollMs === POLL_MS)) {
                     return;
                 }
@@ -1073,6 +1136,15 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     if (current()) {
                         self.conversationEnded();
                     }
+                });
+                ['idle', 'superseded'].forEach(function (ending) {
+                    source.addEventListener(ending, function () {
+                        if (current()) {
+                            rt.streamEnd = ending;
+                            self.stopStream();
+                            self.syncRealtime();
+                        }
+                    });
                 });
                 source.onerror = function () {
                     if (!current() || source.readyState !== window.EventSource.CLOSED) {
@@ -1180,6 +1252,12 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 if (rt.retryTimer !== null) {
                     window.clearTimeout(rt.retryTimer);
                     rt.retryTimer = null;
+                }
+            },
+
+            wake() {
+                if (rt.streamEnd === 'idle') {
+                    rt.streamEnd = '';
                 }
             },
 

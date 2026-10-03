@@ -96,7 +96,7 @@ $json = (string) json_encode($bootConfig, JSON_UNESCAPED_SLASHES | JSON_UNESCAPE
                     <p x-show="message.hasStatus" :class="message.statusClass">
                         <span x-text="message.statusLabel"></span>
                         <button type="button"
-                                x-show="message.isFailed"
+                                x-show="message.canRetry"
                                 @click="retry"
                                 class="ml-2 underline font-semibold">
                             <?= $escaper->escapeHtml($i18n['retry']) ?>

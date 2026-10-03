@@ -27,10 +27,18 @@ All notable changes to this package are documented in this file.
     answer for an ended conversation never touches its replacement; a 400 `bfslc_invalid_token`
     is treated like 401/410;
   - delivery wording matches the store's retrying outbox: "Sending to our team…" while pending,
-    "Not delivered yet. We will keep trying for a while." when a delivery attempt failed; while
-    any of the visitor's messages is pending or failed the open, visible panel re-fetches from
-    the lowest such id every 30 s (for at most 50 minutes); no Retry on those - only on a
-    message the store refused, so a resend can never duplicate in Slack;
+    "Not delivered yet. We will keep trying for about 45 minutes." while the store retries (a
+    message without the `retrying` field counts as retrying), "Not delivered." once it gives up;
+    status changes re-sent over the stream are merged by id and "delivered" is final; while any
+    of the visitor's messages is pending or retrying the open, visible panel re-fetches from the
+    lowest such id every 30 s (for at most 60 minutes); Retry is offered on a message the store
+    refused and on a given-up text message (sent again once, as a new message), never while
+    the store is still retrying, so a resend can never duplicate in Slack;
+  - a stream ended with `event: idle` is not reconnected until the visitor sends, reopens or
+    returns to the tab; `event: superseded` closes it for the page's life and the open panel
+    polls every 30 s instead;
+  - upload refusals name their cause (file limit, daily quota, storage full) from the error
+    code; a 500 reads as the generic error;
   - attachments are fetched with the token only from the store's own origins; an empty file is
     refused before upload; the page URL sent with a new conversation carries no query string or
     fragment;
