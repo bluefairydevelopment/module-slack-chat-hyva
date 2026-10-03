@@ -16,8 +16,33 @@ All notable changes to this package are documented in this file.
     on 401/410 a new conversation is started and the message is sent once more;
   - agent replies arrive over Server-Sent Events, with polling every 3 s (and a fresh stream
     attempt every 60 s) when the store's stream cap is full;
+  - the stream is held only while the panel is open and the tab visible; a closed panel polls
+    every 30 s (for the unread badge), a hidden tab makes no requests, and reopening catches up
+    from the newest message held; while polling, every 10th request checks the conversation's
+    status, so a conversation closed from Slack is noticed;
+  - a transient failure resuming a stored conversation is retried on the next open or send
+    instead of leaving the widget disconnected; End chat reports the conversation ended only
+    when the store confirms it, otherwise it shows the error and keeps the conversation;
+  - every response is checked against the conversation token it was requested with, so a late
+    answer for an ended conversation never touches its replacement; a 400 `bfslc_invalid_token`
+    is treated like 401/410;
+  - delivery wording matches the store's retrying outbox: "Sending to our team…" while pending,
+    "Not delivered yet. We will keep trying for a while." when a delivery attempt failed; while
+    any of the visitor's messages is pending or failed the open, visible panel re-fetches from
+    the lowest such id every 30 s (for at most 50 minutes); no Retry on those - only on a
+    message the store refused, so a resend can never duplicate in Slack;
+  - attachments are fetched with the token only from the store's own origins; an empty file is
+    refused before upload; the page URL sent with a new conversation carries no query string or
+    fragment;
   - file attachments (base64 JSON upload; downloads fetched with the conversation token, never
-    a public URL); name and email before the first message; the availability banner.
+    a public URL); name and email before the first message; the availability banner;
+  - accessibility: a visible focus ring on the file picker, status changes ("Not sent")
+    announced by the message log, and the unread count in the bubble's accessible name.
+- **One boot configuration for both storefronts**: `ViewModel\WidgetViewModel` delegates whether the
+  widget shows (now also requiring Slack to be connected), the REST root (the link base, so
+  `index.php` is kept when rewrites are off), the page context, the upload switch (off when no
+  file type is allowed) and every label to the base package's `Model\Widget\BootConfigProvider`.
+  Only the CSP nonce and the Hyvä-only `unread` label are its own.
 - **`hyva_default.xml`, not `default.xml`** (M2MAP-249): the widget is added on Hyvä store views
   only, and replaces the base package's Luma widget (`bluefairy.slc.widget.luma`) there.
 - **CSP**: the inline component script carries Magento's nonce, is registered with Hyvä's
@@ -34,6 +59,10 @@ All notable changes to this package are documented in this file.
   CSP hash (rendered body, Hyvä's own extractor, the real Magento minifier, mutation controls),
   and the package checks ported from module-jira-hyva (release gate, archive, licence, Tailwind
   scan - with the widened comment stripper and a globstar-aware matcher from M2MAP-474).
+- `Test/Js/chat-behaviour.test.cjs`: the Alpine component's behaviour under plain `node --test`
+  (fake fetch, timers, EventSource, visibility), each guard shown red by a mutation.
+- The layout test reads the base package from MAGENTO_ROOT's vendor/ as well as a sibling
+  checkout, and fails when there is none unless `BFSLC_ALLOW_STANDALONE=1`.
 - Gate configs: `phpunit.xml.dist`, `phpcs.xml.dist`, `phpstan.neon.dist` (level 6, PHP 8.3),
   `Test/bootstrap.php` (reads the base package from a sibling checkout; keeps the M2MAP-682
   refusal).

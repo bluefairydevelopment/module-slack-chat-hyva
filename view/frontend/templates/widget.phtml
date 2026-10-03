@@ -14,6 +14,11 @@
  * operators, no arguments, no assignments, no x-model. Static labels are printed
  * by PHP (escaped) rather than bound, so they need no directive at all.
  * Messages are rendered with x-text only.
+ *
+ * Screen readers: the log announces new messages AND text changes in existing
+ * ones (aria-relevant "additions text"), so a bubble turning to "Not sent" is
+ * spoken. The unread count is in the bubble's accessible name and in a polite
+ * status region; the visual badge is aria-hidden so it is not read twice.
  */
 
 declare(strict_types=1);
@@ -71,7 +76,7 @@ $json = (string) json_encode($bootConfig, JSON_UNESCAPED_SLASHES | JSON_UNESCAPE
         <div x-ref="log"
              role="log"
              aria-live="polite"
-             aria-relevant="additions"
+             aria-relevant="additions text"
              class="flex-1 overflow-y-auto px-4 py-3 space-y-3">
             <p x-show="hasNoMessages" class="text-sm text-gray-600"><?= $escaper->escapeHtml($i18n['intro']) ?></p>
             <template x-for="message in messages" :key="message.key">
@@ -137,11 +142,11 @@ $json = (string) json_encode($bootConfig, JSON_UNESCAPED_SLASHES | JSON_UNESCAPE
                     <input id="bfslc-file"
                            x-ref="file"
                            type="file"
-                           class="sr-only"
+                           class="peer sr-only"
                            :accept="acceptList"
                            @change="onFileChosen">
                     <label for="bfslc-file"
-                           class="cursor-pointer text-sm underline hover:no-underline text-gray-700">
+                           class="cursor-pointer rounded text-sm underline hover:no-underline text-gray-700 peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-blue-500 peer-focus-visible:ring-offset-2">
                         <?= $escaper->escapeHtml($i18n['attach']) ?>
                     </label>
                 </div>
@@ -160,6 +165,7 @@ $json = (string) json_encode($bootConfig, JSON_UNESCAPED_SLASHES | JSON_UNESCAPE
             :aria-expanded="ariaExpanded"
             aria-expanded="false"
             aria-controls="bfslc-panel"
+            :aria-label="bubbleLabel"
             aria-label="<?= $escaper->escapeHtmlAttr($i18n['open']) ?>"
             class="relative inline-flex items-center justify-center w-14 h-14 rounded-full bg-gray-900 text-white shadow-lg hover:bg-gray-700 focus:outline-none focus-visible:ring-4 focus-visible:ring-blue-500">
         <svg aria-hidden="true" focusable="false" class="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -168,7 +174,9 @@ $json = (string) json_encode($bootConfig, JSON_UNESCAPED_SLASHES | JSON_UNESCAPE
         <span x-show="hasUnread"
               x-text="unreadCount"
               x-cloak
+              aria-hidden="true"
               class="absolute -top-1 -right-1 min-w-[1.25rem] h-5 px-1 rounded-full bg-red-600 text-white text-xs font-bold leading-5 text-center"></span>
     </button>
+    <span role="status" class="sr-only" x-text="unreadAnnouncement"></span>
     <?= /* @noEscape */ $block->getChildHtml('bluefairy.slc.widget.hyva.js') ?>
 </div>

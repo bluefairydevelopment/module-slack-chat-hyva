@@ -41,6 +41,26 @@
  *
  * Visitor and agent text is only ever placed with x-text (textContent).
  *
+ * REAL TIME ONLY WHILE SOMEONE CAN SEE IT. The reply stream holds a PHP worker
+ * for as long as it is open, so it is open only while the panel is open AND the
+ * tab is visible. With the panel closed the widget polls every 30 seconds instead,
+ * which is what keeps the unread badge current; with the tab hidden it does
+ * nothing at all. Reopening (or showing the tab) reconnects from the newest
+ * message id already held, so nothing sent in between is missed. While polling,
+ * every tenth poll also asks for the conversation's status, because the
+ * messages endpoint answers 200 for a closed conversation and would never say so.
+ *
+ * DELIVERY STATUSES SETTLE LATER. The stream and the poll only bring new ids, but
+ * the server retries a failed Slack post for about 45 minutes. So while one of the
+ * visitor's messages is pending or failed (and was sent less than 50 minutes ago),
+ * the open, visible panel re-fetches from the lowest such id every 30 seconds;
+ * "delivered" is final. Only a message the store refused outright offers Retry -
+ * a visitor resend of an undelivered one would reach Slack twice.
+ *
+ * EVERY RESPONSE IS CHECKED AGAINST THE TOKEN IT WAS ASKED WITH. A response that
+ * arrives after the conversation was ended or replaced is dropped, so a late
+ * answer for the old conversation can neither end nor feed the new one.
+ *
  * Every class string returned below is a literal in this file, so the
  * view/frontend/tailwind/module.css @source glob reaches them.
  */
@@ -63,8 +83,13 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
 
     var TOKEN_PATTERN = /^[a-f0-9]{64}$/;
     var SESSION_GONE = [401, 410];
+    var INVALID_TOKEN = 'bfslc_invalid_token';
     var POLL_MS = 3000;
+    var IDLE_POLL_MS = 30000;
+    var STATUS_EVERY_N_POLLS = 10;
     var STREAM_RETRY_MS = 60000;
+    var SETTLE_INTERVAL_MS = 30000;
+    var SETTLE_WINDOW_MS = 50 * 60000;
     var HISTORY_PAGE = 200;
     var HISTORY_MAX_PAGES = 10;
 
@@ -120,6 +145,42 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
         return value === null || value === undefined ? '' : String(value);
     }
 
+    function errorCode(data) {
+        return data && data.parameters && typeof data.parameters.error_code === 'string'
+            ? data.parameters.error_code
+            : '';
+    }
+
+    function isGone(res) {
+        if (SESSION_GONE.indexOf(res.status) !== -1) {
+            return true;
+        }
+        return res.status === 400 && errorCode(res.data) === INVALID_TOKEN;
+    }
+
+    function parseUrl(url) {
+        try {
+            return new URL(url, window.location.href);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function isAllowedAttachmentUrl(url, allowedOrigins) {
+        if (typeof url !== 'string' || url === '') {
+            return false;
+        }
+        var parsed = parseUrl(url);
+        if (parsed === null || (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')) {
+            return false;
+        }
+        return allowedOrigins.indexOf(parsed.origin) !== -1;
+    }
+
+    function pageUrl() {
+        return window.location.origin + window.location.pathname;
+    }
+
     function request(method, url, payload) {
         var init = {
             method: method,
@@ -164,6 +225,8 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
         var rt = {
             config: {},
             i18n: {},
+            restRoot: '',
+            origins: [],
             storageKey: 'bfslc_token_default',
             seq: 0,
             lastId: 0,
@@ -171,10 +234,15 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             files: {},
             chain: Promise.resolve(),
             starting: null,
+            historyToken: '',
             es: null,
             pollTimer: null,
+            pollMs: 0,
             pollBusy: false,
+            pollCount: 0,
             retryTimer: null,
+            unsettled: {},
+            settleTimer: null,
             blobUrls: []
         };
 
@@ -208,6 +276,15 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 rt.config = parsed;
                 rt.i18n = parsed.i18n || {};
                 rt.storageKey = 'bfslc_token_' + text(parsed.storeCode || 'default');
+                rt.restRoot = text(parsed.restRoot);
+                if (rt.restRoot !== '' && rt.restRoot.charAt(rt.restRoot.length - 1) !== '/') {
+                    rt.restRoot += '/';
+                }
+                var restUrl = parseUrl(rt.restRoot);
+                rt.origins = [window.location.origin];
+                if (restUrl !== null && restUrl.origin !== window.location.origin) {
+                    rt.origins.push(restUrl.origin);
+                }
                 this.uploadsEnabled = parsed.uploadsEnabled === true;
                 this.acceptList = (parsed.allowedMimeTypes || []).join(',');
 
@@ -220,16 +297,12 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     rt.blobUrls = [];
                 });
                 window.addEventListener('pageshow', function (event) {
-                    if (event.persisted && self.booted) {
-                        self.connectRealtime();
+                    if (event.persisted) {
+                        self.syncRealtime();
                     }
                 });
                 document.addEventListener('visibilitychange', function () {
-                    if (document.hidden) {
-                        self.stopRealtime();
-                    } else if (self.booted) {
-                        self.connectRealtime();
-                    }
+                    self.syncRealtime();
                 });
             },
 
@@ -260,6 +333,12 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             get hasUnread() {
                 return this.unreadCount > 0;
             },
+            get unreadAnnouncement() {
+                return this.unreadCount > 0 ? t('unread').replace('%1', String(this.unreadCount)) : '';
+            },
+            get bubbleLabel() {
+                return this.unreadCount > 0 ? t('open') + ' (' + this.unreadAnnouncement + ')' : t('open');
+            },
             get sendDisabled() {
                 return this.draft.trim() === '';
             },
@@ -278,6 +357,8 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 if (!this.booted) {
                     this.booted = true;
                     this.boot();
+                } else {
+                    this.syncRealtime();
                 }
                 var self = this;
                 this.$nextTick(function () {
@@ -290,6 +371,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
 
             close() {
                 this.isOpen = false;
+                this.syncRealtime();
                 var self = this;
                 this.$nextTick(function () {
                     if (self.$refs.bubble) {
@@ -316,33 +398,51 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             },
 
             boot() {
-                var self = this;
                 var stored = readStored(rt.storageKey);
                 if (stored === '') {
                     this.fetchAvailability();
                     return;
                 }
                 this.token = stored;
-                request('POST', rt.config.restRoot + 'session/status', { sessionToken: stored }).then(function (res) {
+                this.resume(stored);
+            },
+
+            resume(token) {
+                var self = this;
+                return request('POST', rt.restRoot + 'session/status', { sessionToken: token }).then(function (res) {
+                    if (self.token !== token) {
+                        return null;
+                    }
                     if (res.ok && res.data && res.data.status === 'active') {
                         self.adoptSession(res.data);
-                        return self.loadHistory().then(function () {
-                            self.connectRealtime();
-                        });
+                        if (rt.historyToken === token) {
+                            self.syncRealtime();
+                            return null;
+                        }
+                        return self.catchUp(token);
                     }
-                    if (res.ok || res.status === 400 || SESSION_GONE.indexOf(res.status) !== -1) {
+                    if (res.ok || isGone(res)) {
                         self.dropSession();
                         self.fetchAvailability();
                         return null;
                     }
+                    self.booted = false;
                     self.notice = res.status === 503 ? t('unavailable') : t('genericError');
                     return null;
                 });
             },
 
+            catchUp(token) {
+                var self = this;
+                rt.historyToken = token;
+                return this.loadHistory(token).then(function () {
+                    self.syncRealtime();
+                });
+            },
+
             fetchAvailability() {
                 var self = this;
-                request('GET', rt.config.restRoot + 'availability/0', null).then(function (res) {
+                request('GET', rt.restRoot + 'availability/0', null).then(function (res) {
                     if (res.ok && res.data) {
                         self.availability = text(res.data.status);
                         self.availabilityMessage = text(res.data.message);
@@ -363,6 +463,22 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 forgetStored(rt.storageKey);
                 this.token = '';
                 this.sessionStatus = '';
+                rt.historyToken = '';
+                rt.pollCount = 0;
+                rt.unsettled = {};
+            },
+
+            accepted(token) {
+                if (token === '' || this.token !== token) {
+                    return;
+                }
+                this.booted = true;
+                this.sessionStatus = 'active';
+                if (rt.historyToken !== token) {
+                    this.catchUp(token);
+                } else {
+                    this.syncRealtime();
+                }
             },
 
             ensureSession() {
@@ -385,31 +501,35 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 if (this.email.trim() !== '') {
                     payload.email = this.email.trim();
                 }
-                payload.originUrl = window.location.href.split('#')[0];
-                rt.starting = request('POST', rt.config.restRoot + 'session', payload).then(function (res) {
+                payload.originUrl = pageUrl();
+                rt.starting = request('POST', rt.restRoot + 'session', payload).then(function (res) {
                     rt.starting = null;
                     if (!res.ok || !res.data || !TOKEN_PATTERN.test(text(res.data.session_token))) {
                         return Promise.reject(res);
                     }
                     self.adoptSession(res.data);
-                    self.connectRealtime();
+                    rt.historyToken = self.token;
+                    self.syncRealtime();
                     return self.token;
                 });
                 return rt.starting;
             },
 
-            loadHistory() {
+            loadHistory(token) {
                 var self = this;
                 var page = 0;
                 function next() {
                     page += 1;
-                    return request('POST', rt.config.restRoot + 'messages', {
-                        sessionToken: self.token,
+                    return request('POST', rt.restRoot + 'messages', {
+                        sessionToken: token,
                         afterId: rt.lastId,
                         limit: HISTORY_PAGE
                     }).then(function (res) {
+                        if (self.token !== token) {
+                            return null;
+                        }
                         if (!res.ok || !res.data) {
-                            if (SESSION_GONE.indexOf(res.status) !== -1) {
+                            if (isGone(res)) {
                                 self.conversationEnded();
                             }
                             return null;
@@ -447,7 +567,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 msg.rowClass = ROW_CLASS[dir];
                 msg.bubbleClass = BUBBLE_CLASS[dir];
                 msg.isFailed = msg.state === 'failed';
-                msg.canDownload = msg.attachmentUrl !== '';
+                msg.canDownload = isAllowedAttachmentUrl(msg.attachmentUrl, rt.origins);
                 msg.hasAttachment = msg.attachmentName !== '' || msg.canDownload;
                 msg.isPendingFile = msg.hasAttachment && !msg.canDownload;
                 msg.attachmentLabel = msg.canDownload
@@ -460,6 +580,8 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     msg.statusLabel = t('notSent') + (msg.failReason !== '' ? ': ' + msg.failReason : '');
                 } else if (msg.direction === 'outbound' && msg.deliveryStatus === 'failed') {
                     msg.statusLabel = t('notDelivered');
+                } else if (msg.direction === 'outbound' && msg.deliveryStatus === 'pending') {
+                    msg.statusLabel = t('deliveryPending');
                 } else {
                     msg.statusLabel = '';
                 }
@@ -504,6 +626,85 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 msg.state = 'sent';
                 msg.failReason = '';
                 this.decorate(msg);
+                this.track(msg, raw);
+                this.scheduleSettle();
+            },
+
+            track(msg, raw) {
+                var open = msg.direction === 'outbound'
+                    && (msg.deliveryStatus === 'pending' || msg.deliveryStatus === 'failed');
+                if (!open || msg.id <= 0) {
+                    delete rt.unsettled[msg.id];
+                    return;
+                }
+                if (rt.unsettled[msg.id]) {
+                    return;
+                }
+                var since = Date.now();
+                var created = Date.parse(text(raw.created_at));
+                if (!isNaN(created) && created < since) {
+                    since = created;
+                }
+                rt.unsettled[msg.id] = since;
+            },
+
+            unsettledIds() {
+                var now = Date.now();
+                return Object.keys(rt.unsettled).filter(function (id) {
+                    if (now - rt.unsettled[id] > SETTLE_WINDOW_MS) {
+                        delete rt.unsettled[id];
+                        return false;
+                    }
+                    return true;
+                }).map(Number);
+            },
+
+            scheduleSettle() {
+                if (rt.settleTimer !== null || !this.isOpen || !this.hasSession || document.hidden
+                    || this.unsettledIds().length === 0) {
+                    return;
+                }
+                var self = this;
+                rt.settleTimer = window.setTimeout(function () {
+                    rt.settleTimer = null;
+                    self.settle();
+                }, SETTLE_INTERVAL_MS);
+            },
+
+            stopSettle() {
+                if (rt.settleTimer !== null) {
+                    window.clearTimeout(rt.settleTimer);
+                    rt.settleTimer = null;
+                }
+            },
+
+            settle() {
+                var self = this;
+                var token = this.token;
+                var ids = this.unsettledIds();
+                if (token === '' || ids.length === 0 || !this.isOpen || document.hidden) {
+                    return;
+                }
+                request('POST', rt.restRoot + 'messages', {
+                    sessionToken: token,
+                    afterId: Math.min.apply(Math, ids) - 1,
+                    limit: 100
+                }).then(function (res) {
+                    if (self.token !== token) {
+                        return;
+                    }
+                    if (!res.ok || !res.data) {
+                        if (isGone(res)) {
+                            self.conversationEnded();
+                            return;
+                        }
+                    } else {
+                        (res.data.items || []).forEach(function (item) {
+                            self.receive(item);
+                        });
+                    }
+                    self.scheduleSettle();
+                });
             },
 
             receive(raw) {
@@ -639,6 +840,10 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     this.notice = t('uploadsOff');
                     return;
                 }
+                if (file.size === 0) {
+                    this.notice = t('fileEmpty');
+                    return;
+                }
                 if (file.size > toInt(rt.config.maxUploadBytes)) {
                     this.notice = t('tooLarge');
                     return;
@@ -678,12 +883,13 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
 
             deliver(key) {
                 var self = this;
-                var msg = this.byKey(key);
-                if (!msg) {
+                var used = '';
+                if (!this.byKey(key)) {
                     return Promise.resolve();
                 }
-                return this.ensureSession().then(function () {
-                    return self.post(key);
+                return this.ensureSession().then(function (token) {
+                    used = token;
+                    return self.post(key, token);
                 }, function (res) {
                     return res && typeof res.status === 'number' ? res : { ok: false, status: 0, data: null };
                 }).then(function (res) {
@@ -693,24 +899,28 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     }
                     if (res.ok) {
                         self.confirm(key, res.data);
+                        self.accepted(used);
                         return null;
                     }
-                    if (SESSION_GONE.indexOf(res.status) !== -1) {
-                        self.dropSession();
+                    if (isGone(res)) {
+                        if (used !== '' && self.token === used) {
+                            self.dropSession();
+                        }
                         if (!current.resent) {
                             current.resent = true;
                             return self.deliver(key);
                         }
+                        self.fail(key, 410, current.kind);
+                        return null;
                     }
                     self.fail(key, res.status, current.kind);
                     return null;
                 });
             },
 
-            post(key) {
+            post(key, token) {
                 var msg = this.byKey(key);
-                var root = rt.config.restRoot;
-                var token = this.token;
+                var root = rt.restRoot;
                 if (msg.kind !== 'file') {
                     return request('POST', root + 'message', { sessionToken: token, body: msg.body });
                 }
@@ -735,16 +945,20 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             openAttachment() {
                 var msg = this.byKey(this.message.key);
                 var self = this;
-                if (!msg || msg.attachmentUrl === '' || this.token === '') {
+                var token = this.token;
+                if (!msg || token === '' || !isAllowedAttachmentUrl(msg.attachmentUrl, rt.origins)) {
                     return;
                 }
                 var name = msg.attachmentName || 'attachment';
                 window.fetch(msg.attachmentUrl, {
                     credentials: 'same-origin',
-                    headers: { 'X-Bfslc-Token': this.token }
+                    headers: { 'X-Bfslc-Token': token }
                 }).then(function (response) {
                     return response.ok ? response.blob() : Promise.reject(response);
                 }).then(function (blob) {
+                    if (self.token !== token) {
+                        return;
+                    }
                     var url = URL.createObjectURL(blob);
                     rt.blobUrls.push(url);
                     var link = document.createElement('a');
@@ -755,7 +969,9 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     link.click();
                     link.remove();
                 }).catch(function () {
-                    self.notice = t('genericError');
+                    if (self.token === token) {
+                        self.notice = t('genericError');
+                    }
                 });
             },
 
@@ -765,8 +981,22 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 if (token === '') {
                     return;
                 }
-                request('POST', rt.config.restRoot + 'session/close', { sessionToken: token }).then(function () {
-                    self.conversationEnded();
+                this.notice = '';
+                request('POST', rt.restRoot + 'session/close', { sessionToken: token }).then(function (res) {
+                    if (self.token !== token) {
+                        return;
+                    }
+                    if (res.ok || isGone(res)) {
+                        self.conversationEnded();
+                        return;
+                    }
+                    if (res.status === 429) {
+                        self.notice = t('rateLimited');
+                    } else if (res.status === 503) {
+                        self.notice = t('unavailable');
+                    } else {
+                        self.notice = t('genericError');
+                    }
                 });
             },
 
@@ -790,21 +1020,45 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 this.scrollLog();
             },
 
-            connectRealtime() {
-                if (this.token === '' || rt.es !== null || rt.pollTimer !== null || document.hidden) {
+            syncRealtime() {
+                if (!this.hasSession || document.hidden) {
+                    this.stopRealtime();
                     return;
                 }
+                if (!this.isOpen) {
+                    this.stopStream();
+                    this.clearStreamRetry();
+                    this.stopSettle();
+                    this.startPolling(IDLE_POLL_MS);
+                    return;
+                }
+                this.scheduleSettle();
+                if (rt.es !== null || (rt.pollTimer !== null && rt.pollMs === POLL_MS)) {
+                    return;
+                }
+                this.stopPolling();
+                this.connectStream();
+            },
+
+            connectStream() {
                 if (typeof window.EventSource !== 'function') {
-                    this.startPolling();
+                    this.startPolling(POLL_MS);
                     return;
                 }
                 var self = this;
+                var token = this.token;
                 var base = text(rt.config.streamUrl);
                 var url = base + (base.indexOf('?') === -1 ? '?' : '&')
-                    + 'token=' + encodeURIComponent(this.token) + '&after=' + rt.lastId;
+                    + 'token=' + encodeURIComponent(token) + '&after=' + rt.lastId;
                 var source = new window.EventSource(url);
                 rt.es = source;
+                function current() {
+                    return rt.es === source && self.token === token;
+                }
                 source.addEventListener('message', function (event) {
+                    if (!current()) {
+                        return;
+                    }
                     var data = null;
                     try {
                         data = JSON.parse(event.data);
@@ -816,14 +1070,16 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     }
                 });
                 source.addEventListener('closed', function () {
-                    self.conversationEnded();
+                    if (current()) {
+                        self.conversationEnded();
+                    }
                 });
                 source.onerror = function () {
-                    if (source.readyState !== window.EventSource.CLOSED) {
+                    if (!current() || source.readyState !== window.EventSource.CLOSED) {
                         return;
                     }
                     self.stopStream();
-                    self.startPolling();
+                    self.startPolling(POLL_MS);
                     self.scheduleStreamRetry();
                 };
             },
@@ -835,41 +1091,75 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 }
             },
 
-            startPolling() {
-                if (rt.pollTimer !== null || this.token === '') {
+            startPolling(ms) {
+                if (this.token === '') {
                     return;
                 }
+                if (rt.pollTimer !== null) {
+                    if (rt.pollMs === ms) {
+                        return;
+                    }
+                    this.stopPolling();
+                }
                 var self = this;
+                rt.pollMs = ms;
                 rt.pollTimer = window.setInterval(function () {
                     self.poll();
-                }, POLL_MS);
+                }, ms);
+                this.poll();
             },
 
             stopPolling() {
                 if (rt.pollTimer !== null) {
                     window.clearInterval(rt.pollTimer);
                     rt.pollTimer = null;
+                    rt.pollMs = 0;
                 }
             },
 
             poll() {
                 var self = this;
-                if (rt.pollBusy || this.token === '') {
+                var token = this.token;
+                if (rt.pollBusy || token === '') {
                     return;
                 }
                 rt.pollBusy = true;
-                request('POST', rt.config.restRoot + 'messages', {
-                    sessionToken: this.token,
+                request('POST', rt.restRoot + 'messages', {
+                    sessionToken: token,
                     afterId: rt.lastId,
                     limit: 100
                 }).then(function (res) {
+                    if (self.token !== token) {
+                        return null;
+                    }
+                    if (!res.ok || !res.data) {
+                        if (isGone(res)) {
+                            self.conversationEnded();
+                        }
+                        return null;
+                    }
+                    (res.data.items || []).forEach(function (item) {
+                        self.receive(item);
+                    });
+                    rt.pollCount += 1;
+                    return rt.pollCount % STATUS_EVERY_N_POLLS === 0 ? self.checkStatus(token) : null;
+                }).then(function () {
                     rt.pollBusy = false;
-                    if (res.ok && res.data) {
-                        (res.data.items || []).forEach(function (item) {
-                            self.receive(item);
-                        });
-                    } else if (SESSION_GONE.indexOf(res.status) !== -1) {
+                }, function () {
+                    rt.pollBusy = false;
+                });
+            },
+
+            checkStatus(token) {
+                var self = this;
+                return request('POST', rt.restRoot + 'session/status', { sessionToken: token }).then(function (res) {
+                    if (self.token !== token) {
+                        return;
+                    }
+                    if (isGone(res) || (res.ok && res.data && res.data.status !== 'active')) {
                         self.conversationEnded();
+                    } else if (res.ok && res.data) {
+                        self.adoptSession(res.data);
                     }
                 });
             },
@@ -882,17 +1172,22 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 rt.retryTimer = window.setTimeout(function () {
                     rt.retryTimer = null;
                     self.stopPolling();
-                    self.connectRealtime();
+                    self.syncRealtime();
                 }, STREAM_RETRY_MS);
+            },
+
+            clearStreamRetry() {
+                if (rt.retryTimer !== null) {
+                    window.clearTimeout(rt.retryTimer);
+                    rt.retryTimer = null;
+                }
             },
 
             stopRealtime() {
                 this.stopStream();
                 this.stopPolling();
-                if (rt.retryTimer !== null) {
-                    window.clearTimeout(rt.retryTimer);
-                    rt.retryTimer = null;
-                }
+                this.clearStreamRetry();
+                this.stopSettle();
             },
 
             scrollLog() {

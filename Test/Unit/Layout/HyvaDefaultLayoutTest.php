@@ -96,34 +96,115 @@ class HyvaDefaultLayoutTest extends TestCase
     }
 
     /**
-     * M2MAP-292: a removal of a name nothing declares is a no-op that reads like a
-     * decision. The Luma block is declared by the base package; when its checkout
-     * sits beside this one, check it really declares that name.
+     * The base package's checkout to read layouts from: SLACKCHAT_BASE_SRC when set
+     * (as Test/bootstrap.php honours it), else the sibling checkout these packages
+     * are built in, else the copy composer installed into MAGENTO_ROOT's vendor/.
+     * The first candidate that IS the base package (has registration.php) wins,
+     * whether or not it has layouts - a base package without the Luma block must
+     * fail, not fall through to an older copy that has it.
      *
-     * SKIPS until the base package has any frontend layout at all - at the time of
-     * writing (2026-10-03) its Luma widget was being built in parallel. Once
-     * module-slack-chat/view/frontend/layout exists, the skip can no longer happen
-     * and a missing declaration goes red.
+     * @param array<int, string> $candidates
+     * @return string|null
+     */
+    public static function resolveBasePackage(array $candidates): ?string
+    {
+        foreach ($candidates as $candidate) {
+            if ($candidate !== '' && is_file($candidate . '/registration.php')) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private static function baseCandidates(): array
+    {
+        $magentoRoot = (string) getenv('MAGENTO_ROOT');
+
+        return [
+            (string) getenv('SLACKCHAT_BASE_SRC'),
+            dirname(__DIR__, 4) . '/module-slack-chat',
+            $magentoRoot === '' ? '' : $magentoRoot . '/vendor/bluefairy/module-slack-chat',
+        ];
+    }
+
+    /**
+     * M2MAP-292: a removal of a name nothing declares is a no-op that reads like a
+     * decision. The Luma block is declared by the base package; check it really
+     * declares that name.
+     *
+     * This used to SKIP when no base checkout sat beside this one, which meant it
+     * never ran anywhere but this workstation. It now also reads the base package
+     * composer installed under MAGENTO_ROOT, and when there is no base package at
+     * all it FAILS - unless BFSLC_ALLOW_STANDALONE=1 says the run is deliberately
+     * without one, in which case it skips and says so.
      */
     public function testTheBasePackageDeclaresTheBlockThisRemoves(): void
     {
-        $base = getenv('SLACKCHAT_BASE_SRC') ?: dirname(__DIR__, 4) . '/module-slack-chat';
-        $layouts = glob($base . '/view/frontend/layout/*.xml') ?: [];
-        if (!is_dir($base . '/view/frontend/layout')) {
-            self::markTestSkipped('no base-package frontend layout at ' . $base . ' to check the Luma block name against');
+        $candidates = self::baseCandidates();
+        $base = self::resolveBasePackage($candidates);
+        if ($base === null) {
+            if (getenv('BFSLC_ALLOW_STANDALONE') === '1') {
+                self::markTestSkipped('BFSLC_ALLOW_STANDALONE=1 and no base package at: ' . implode(', ', array_filter($candidates)));
+            }
+            self::fail(
+                'bluefairy/module-slack-chat was not found at any of: ' . implode(', ', array_filter($candidates))
+                . '. Install it on MAGENTO_ROOT, set SLACKCHAT_BASE_SRC, or set BFSLC_ALLOW_STANDALONE=1 to run without it.'
+            );
         }
 
+        $layouts = glob($base . '/view/frontend/layout/*.xml') ?: [];
         $declared = [];
         foreach ($layouts as $file) {
             preg_match_all('/<block\b[^>]*\bname="([^"]+)"/', (string) file_get_contents($file), $m);
             $declared = array_merge($declared, $m[1]);
         }
-        self::assertNotEmpty($declared, 'CONTROL: no block declarations were read from the base package layout');
+        self::assertNotSame([], $layouts, 'the base package at ' . $base . ' ships no frontend layout, so it declares no Luma widget');
+        self::assertNotEmpty($declared, 'CONTROL: no block declarations were read from ' . $base . '/view/frontend/layout');
         self::assertContains(
             self::LUMA_BLOCK,
             $declared,
-            'the base package declares no block named ' . self::LUMA_BLOCK . ', so the removal here does nothing '
-            . 'and a Hyvä store would render both widgets'
+            'the base package at ' . $base . ' declares no block named ' . self::LUMA_BLOCK . ', so the removal here '
+            . 'does nothing and a Hyvä store would render both widgets'
         );
+    }
+
+    /**
+     * The resolver, against directories this test plants: the first real base
+     * package wins, a directory without registration.php is not one, and none
+     * at all is null (which the test above turns into a failure).
+     */
+    public function testTheBasePackageIsResolvedInOrderAndAbsenceIsNull(): void
+    {
+        $root = sys_get_temp_dir() . '/bfslc-base-' . bin2hex(random_bytes(4));
+        $empty = $root . '/empty';
+        $vendor = $root . '/vendor/bluefairy/module-slack-chat';
+        $sibling = $root . '/module-slack-chat';
+        foreach ([$empty, $vendor, $sibling] as $dir) {
+            mkdir($dir, 0700, true);
+        }
+        try {
+            self::assertNull(self::resolveBasePackage(['', $empty, $root . '/missing']), 'a directory without registration.php was taken for the base package');
+
+            touch($vendor . '/registration.php');
+            self::assertSame($vendor, self::resolveBasePackage(['', $empty, $vendor]), 'the vendor copy is not found');
+
+            touch($sibling . '/registration.php');
+            self::assertSame($sibling, self::resolveBasePackage([$sibling, $vendor]), 'an earlier candidate does not win');
+        } finally {
+            foreach ([$vendor, $sibling] as $dir) {
+                if (is_file($dir . '/registration.php')) {
+                    unlink($dir . '/registration.php');
+                }
+            }
+            foreach ([$sibling, $vendor, $root . '/vendor/bluefairy', $root . '/vendor', $empty, $root] as $dir) {
+                if (is_dir($dir)) {
+                    rmdir($dir);
+                }
+            }
+        }
     }
 }

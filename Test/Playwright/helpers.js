@@ -8,6 +8,8 @@
  * database by the test, never written.
  */
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const zlib = require('zlib');
 const { execFileSync } = require('child_process');
 const { expect } = require('@playwright/test');
@@ -200,6 +202,25 @@ function generatePng(bytes) {
     ]);
 }
 
+/** base64 sha256, as CSP writes it. */
+function sha256(body) {
+    return crypto.createHash('sha256').update(body, 'utf8').digest('base64');
+}
+
+/** The sha256 this package pins for its inline script, read from etc/csp_whitelist.xml. */
+function whitelistedScriptHash() {
+    const xml = fs.readFileSync(path.join(__dirname, '..', '..', 'etc', 'csp_whitelist.xml'), 'utf8');
+    const m = xml.match(/<value id="bfslc-hyva-chat-js" type="hash" algorithm="sha256">([^<]+)<\/value>/);
+    expect(m, 'etc/csp_whitelist.xml pins no bfslc-hyva-chat-js hash').not.toBeNull();
+    return m[1].trim();
+}
+
+/** The script-src directive of the enforced (or, failing that, report-only) policy, or ''. */
+function scriptSrc(headers) {
+    const policy = headers['content-security-policy'] || headers['content-security-policy-report-only'] || '';
+    return policy.split(';').map((p) => p.trim()).find((p) => p.startsWith('script-src ')) || '';
+}
+
 module.exports = {
     SEL,
     CHAT_REQUEST,
@@ -212,4 +233,7 @@ module.exports = {
     slackThreadFor,
     postSignedAgentReply,
     generatePng,
+    sha256,
+    whitelistedScriptHash,
+    scriptSrc,
 };

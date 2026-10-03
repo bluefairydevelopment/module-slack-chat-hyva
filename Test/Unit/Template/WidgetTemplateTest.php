@@ -166,6 +166,53 @@ class WidgetTemplateTest extends TestCase
         self::assertMatchesRegularExpression(self::DOT_PATH, 'message.bubbleClass');
     }
 
+    /**
+     * The file input is sr-only (the visible control is its label), so without a
+     * peer focus style a keyboard user tabbing onto it sees nothing at all.
+     * `peer-*` only works when the input is an EARLIER SIBLING of the label, so the
+     * order is asserted too.
+     */
+    public function testTheFileInputHasAVisibleKeyboardFocusIndicator(): void
+    {
+        $html = $this->render(true, self::boot());
+
+        self::assertSame(1, preg_match('#<input id="bfslc-file"[^>]*class="([^"]*)"#', $html, $input), 'CONTROL: the file input is rendered');
+        $inputClasses = preg_split('/\s+/', $input[1]) ?: [];
+        self::assertContains('sr-only', $inputClasses, 'CONTROL: the input is visually hidden, so its label must show focus');
+        self::assertContains('peer', $inputClasses, 'the file input is not a Tailwind peer, so no label style can follow its focus');
+
+        self::assertSame(1, preg_match('#<label for="bfslc-file"[^>]*class="([^"]*)"#', $html, $label));
+        $labelClasses = preg_split('/\s+/', $label[1]) ?: [];
+        self::assertContains('peer-focus-visible:ring-2', $labelClasses, 'the label shows no ring when the file input has keyboard focus');
+        self::assertContains('peer-focus-visible:ring-blue-500', $labelClasses);
+
+        // Sibling order: the input, then the label, with no element boundary between.
+        self::assertSame(1, preg_match('#<input id="bfslc-file"[^>]*>\s*<label for="bfslc-file"#', $html), 'the label is not the next sibling of the input');
+    }
+
+    /**
+     * A message turning to "Not sent" is a TEXT change in an existing node; a
+     * log announcing additions only never speaks it. And the unread badge sits
+     * inside a button whose aria-label replaces its content, so the count must
+     * be in the label itself (and the badge hidden, or it is read twice).
+     */
+    public function testScreenReadersHearStatusChangesAndTheUnreadCount(): void
+    {
+        $html = $this->render(true, self::boot());
+
+        self::assertSame(1, preg_match('#<div x-ref="log"[^>]*>#', $html, $log), 'CONTROL: the log is rendered');
+        self::assertStringContainsString('aria-live="polite"', $log[0]);
+        self::assertStringContainsString('aria-relevant="additions text"', $log[0], 'the log does not announce text changes');
+
+        self::assertSame(1, preg_match('#<button type="button"\s+x-ref="bubble"[^>]*>#', $html, $bubble), 'CONTROL: the bubble is rendered');
+        self::assertStringContainsString(':aria-label="bubbleLabel"', $bubble[0], 'the bubble\'s accessible name does not carry the unread count');
+        self::assertStringContainsString('aria-label="L:open"', $bubble[0], 'CONTROL: the static label is still there before Alpine starts');
+
+        self::assertSame(1, preg_match('#<span x-show="hasUnread"[^>]*>#', $html, $badge));
+        self::assertStringContainsString('aria-hidden="true"', $badge[0], 'the visual badge would be read as a bare number');
+        self::assertMatchesRegularExpression('#<span role="status" class="sr-only" x-text="unreadAnnouncement"></span>#', $html);
+    }
+
     public function testNoDirectiveInsertsHtmlOrAssigns(): void
     {
         $names = array_column(self::directives(), 0);

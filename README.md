@@ -49,7 +49,12 @@ bin/magento cache:flush
 
 On every page of a Hyvä store view **except** the checkout (`checkout_index_index`) and the
 order success page (`checkout_onepage_success`), when **Stores → Configuration → BlueFairy Integrations →
-Slack Live Chat → Advanced → Show the Chat Widget** is Yes for that store view. On a Luma store view
+Slack Live Chat → Advanced → Show the Chat Widget** is Yes for that store view **and Slack is
+connected** (a bot token or an incoming webhook) - a bubble that could only ever fail to start a
+conversation is not shown. The **Attach a file** link appears only when uploads are on and at
+least one file type is allowed. These rules, the page context below and every label are the base
+package's (`BlueFairy\SlackChat\Model\Widget\BootConfigProvider`), shared with the Luma widget,
+so the two storefronts behave the same. On a Luma store view
 nothing in this package applies - the layout file is `hyva_default.xml`, which Hyvä only loads
 for Hyvä themes - and the base package's Luma widget is shown instead.
 
@@ -78,11 +83,26 @@ always inserted as text, never as HTML.
 
 - **No network requests until the visitor opens the bubble.** Opening it starts the
   conversation lookup and the reply stream; a page where nobody chats makes no chat requests.
-- One inline script, about 31 KB uncompressed (about 6 KB gzipped), parsed but idle until
+- **The reply stream is held only while the panel is open and the tab is visible.** Each open
+  stream occupies one PHP worker for its whole life, so the widget closes it when the visitor
+  closes the panel or switches tab. With the panel closed (and a conversation in progress) the
+  widget instead asks for new messages **every 30 seconds** - that is what keeps the unread
+  badge on the bubble current - and with the tab hidden it makes no requests at all. Reopening
+  the panel reconnects the stream from the newest message already shown, so nothing is missed.
+  While polling, every tenth request also checks whether the conversation has been closed.
+- **Delivery statuses settle on their own.** The store retries a message Slack refused for
+  about 45 minutes, so while one of the visitor's messages reads "Sending to our team…" or
+  "Not delivered yet", the open panel re-checks it every 30 seconds (for at most 50 minutes,
+  never while closed or hidden) until it is delivered. Such a message offers no Retry: the
+  store is already retrying, and a second copy would reach Slack twice. Retry is offered only
+  on a message the store refused outright ("Not sent").
+- One inline script, about 40 KB uncompressed (about 7 KB gzipped), parsed but idle until
   Alpine starts. No external JavaScript, no web fonts, no images (the icons are inline SVG).
 - The bubble and panel are `position: fixed`, so they cause no layout shift.
-- The bubble has an accessible name, the panel is a labelled non-modal dialog, and new
-  messages are announced through a polite live region.
+- The bubble has an accessible name that includes the unread count, the panel is a labelled
+  non-modal dialog, and new messages - and a message's status changing, such as "Not sent" -
+  are announced through a polite live region. Every control, the file picker included, shows
+  a visible keyboard focus ring.
 
 ## Troubleshooting
 
@@ -92,6 +112,8 @@ always inserted as text, never as HTML.
 | No bubble at all | Widget disabled for the store view, or you are on the checkout/success page, or the store view uses a Luma theme. |
 | Bubble shows but does nothing; console shows a CSP error | A custom CSP header replaced Magento's. Allow the hash in `etc/csp_whitelist.xml`, or Magento's nonce. |
 | Replies arrive with a few seconds' delay | The base package's concurrent-stream cap is full; the widget is polling every 3 seconds and will retry the stream every 60. |
+| The unread badge takes up to half a minute to appear | Expected: with the panel closed the widget checks every 30 seconds rather than holding a stream open (see Performance). |
+| A message reads "Not delivered yet. We will keep trying for a while." | The store saved it but Slack refused it or could not be reached. The store retries for about 45 minutes; check the Slack credentials and the cron. |
 
 ## License
 

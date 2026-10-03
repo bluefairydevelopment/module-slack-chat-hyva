@@ -46,13 +46,18 @@ test.describe('Hyvä Slack Live Chat widget', () => {
     test('an agent reply posted to Slack reaches the open panel over the stream', async ({ page, request }) => {
         test.skip(!process.env.SLACK_SIGNING_SECRET, 'SLACK_SIGNING_SECRET is not set - cannot sign a Slack event');
 
+        // Recorded from before the page loads: the stream opens as soon as the first
+        // message creates the conversation, so a wait registered after sendMessage()
+        // could miss it and hang until the timeout.
+        const chat = h.recordChatRequests(page);
         await page.goto(h.pagePath());
         const config = await h.bootConfig(page);
         await h.openChat(page);
         await h.sendMessage(page, 'e2e needs a reply ' + Date.now());
 
-        const streamOpened = page.waitForRequest((req) => req.url().includes('/bluefairy_slc/stream/index'));
-        await streamOpened;
+        await expect.poll(() => chat.some((r) => r.includes('/bluefairy_slc/stream/index')), {
+            message: 'the reply stream was never opened for the new conversation',
+        }).toBe(true);
 
         const thread = h.slackThreadFor(await h.storedToken(page, config.storeCode));
         test.skip(Boolean(thread.reason), thread.reason || '');
@@ -145,34 +150,56 @@ test.describe('Hyvä Slack Live Chat widget', () => {
         await expect(page.locator(h.SEL.banner)).toHaveText(expected);
     });
 
-    test('the inline component script carries a CSP nonce and the policy admits it', async ({ page, request }) => {
+    /**
+     * The policy must admit THIS script - by the nonce on its own tag or by its own
+     * sha256 (etc/csp_whitelist.xml; Hyvä's registerInlineScript sends the same hash
+     * on cached pages). Any other sha256 in script-src proves nothing about it.
+     */
+    test('the inline component script carries a CSP nonce and a strict policy admits it by name', async ({ request }) => {
         const response = await request.get(h.pagePath());
         expect(response.status()).toBe(200);
         const html = await response.text();
 
-        const match = html.match(/<script nonce="([^"]*)">\s*\(function \(\) \{\s*'use strict';[\s\S]*?Alpine\.data\('bfslcChat'/);
+        const match = html.match(/<script nonce="([^"]*)">(\s*\(function \(\) \{\s*'use strict';[\s\S]*?Alpine\.data\('bfslcChat'[\s\S]*?)<\/script>/);
         expect(match, 'the widget\'s inline script is not on the page').not.toBeNull();
         expect(match[1], 'the inline script has an empty nonce').toMatch(/^[A-Za-z0-9+/=]{16,}$/);
 
-        const headers = response.headers();
-        const policy = headers['content-security-policy'] || headers['content-security-policy-report-only'] || '';
-        const scriptSrc = (policy.split(';').map((p) => p.trim()).find((p) => p.startsWith('script-src')) || '');
-        if (scriptSrc !== '' && !scriptSrc.includes("'unsafe-inline'")) {
-            // A strict policy must name this script: by the nonce on the tag, or by a hash
-            // (Hyvä's registerInlineScript on cached pages, or etc/csp_whitelist.xml).
-            const admitted = scriptSrc.includes("'nonce-" + match[1] + "'") || /'sha256-[A-Za-z0-9+/=]+'/.test(scriptSrc);
-            expect(admitted, 'script-src admits neither this nonce nor any sha256: ' + scriptSrc).toBe(true);
-        }
+        const pinned = h.whitelistedScriptHash();
+        expect(h.sha256(match[2]), 'the served script body is not the one whose hash etc/csp_whitelist.xml pins').toBe(pinned);
 
-        // And in the browser: no CSP violation, and the component actually starts.
+        const scriptSrc = h.scriptSrc(response.headers());
+        test.skip(scriptSrc === '', 'the response sends no script-src (Magento_Csp off or replaced) - nothing to check the script against');
+        test.skip(scriptSrc.includes("'unsafe-inline'"), "script-src allows 'unsafe-inline', so Magento sends no nonces or hashes and the strict-mode admission cannot be shown on this store");
+
+        const byNonce = scriptSrc.includes("'nonce-" + match[1] + "'");
+        const byHash = scriptSrc.includes("'sha256-" + pinned + "'");
+        expect(byNonce || byHash, "script-src names neither this script's nonce nor its pinned sha256 (" + pinned + '): ' + scriptSrc).toBe(true);
+    });
+
+    /**
+     * The component is written for Alpine's CSP build. It is only exercised by that
+     * build when the store serves it (alpine3-csp) or when the policy forbids eval,
+     * which the standard build cannot run without. On any other store a working
+     * widget proves nothing about CSP compatibility, so the spec says so and skips.
+     */
+    test('the component starts under the CSP Alpine build with no CSP violation', async ({ page }) => {
         const violations = [];
         page.on('console', (msg) => {
-            if (/Content Security Policy|Refused to execute/i.test(msg.text())) {
+            if (/Content Security Policy|Refused to (execute|evaluate)/i.test(msg.text())) {
                 violations.push(msg.text());
             }
         });
-        await page.goto(h.pagePath());
+        const response = await page.goto(h.pagePath());
+        const html = await response.text();
+        const scriptSrc = h.scriptSrc(response.headers());
+        const cspAlpine = /<script[^>]+src="[^"]*\/alpine3-csp(\.min)?\.js"/.test(html);
+        const noEval = scriptSrc !== '' && !scriptSrc.includes("'unsafe-eval'");
+        test.skip(!cspAlpine && !noEval, "this store serves the standard Alpine build and its script-src allows 'unsafe-eval' (or sends none) - the CSP build is not in use, so this run cannot show the component works under it");
+
         await h.openChat(page);
+        // The panel opening is the component running: x-show="isOpen" only flips if
+        // Alpine evaluated the component's directives.
+        await expect(page.locator(h.SEL.panel)).toBeVisible();
         expect(violations).toEqual([]);
     });
 });
