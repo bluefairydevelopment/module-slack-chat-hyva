@@ -5,7 +5,7 @@
  */
 -->
 <!--
-    WHY hyva_default.xml AND NOT default.xml (M2MAP-249).
+    WHY hyva_default.xml AND NOT default.xml.
 
     A layout file named default.xml applies on EVERY theme. This package's
     templates are Alpine components that only work where Hyvä loads Alpine, so a

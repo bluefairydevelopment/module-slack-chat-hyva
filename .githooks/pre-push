@@ -16,7 +16,7 @@
 #      push (M2MAP-546: a tag is a release, and no release is cut over a red gate).
 #      Exit codes are read, never output.
 #
-# THE JAVASCRIPT GATE (review round 2, U7) runs Test/Js/*.test.cjs, the widget's
+# THE JAVASCRIPT GATE runs Test/Js/*.test.cjs, the widget's
 # behaviour suite, which no other gate ran. It runs second, before the PHP gates:
 # it takes seconds, so a red widget refuses the tag before minutes of phpunit and
 # phpstan. node is given the FILES, never the directory: Node 22+ treats
@@ -25,6 +25,18 @@
 # and exits 0, which would pass every tag. So the hook lists the files itself and
 # refuses an empty list. BFSLC_WIDGET_JS / BFSLC_CHAT_JS (the suites' overrides
 # for the file under test) are unset, so the gate measures this tree's widget.
+#
+# WHAT THE TAG GATE DOES NOT RUN: Test/Playwright, the storefront browser specs. They
+# need a running Hyva store and a Slack signing secret, so they cannot run from a
+# development clone. Run them on the AWS test rig before a release; the gate cannot.
+#
+# A SKIPPED TEST REFUSES THE TAG. phpunit.xml.dist sets failOnSkipped: a unit test
+# that skips (HyvaDefaultLayoutTest under BFSLC_ALLOW_STANDALONE=1 with no base
+# package, say) has measured nothing, and must stop a release rather than pass unseen.
+#
+# Test/Unit/Package/TheReleaseGateIsArmedTest pushes a tag through this hook with a
+# stand-in phpunit that exits 1 and asserts the push is refused at phpunit, and runs a
+# planted skipping test under phpunit.xml.dist and asserts it fails.
 #
 # INSTALL: this file is tracked. One line per clone, once:
 #
@@ -52,7 +64,7 @@
 # CONTROL RUN 2026-10-03 on clean clones pushed to throwaway bare remotes: a clean tag
 # passed every gate and landed;
 # a planted failing node test was refused at node-test before phpunit started, and an empty Test/Js was refused - the tag never
-# reached the remote. Recorded in CHANGELOG.md. Re-run it whenever this file changes - a release
+# reached the remote. Re-run it whenever this file changes - a release
 # gate never seen to refuse is an untested instrument.
 
 set -u

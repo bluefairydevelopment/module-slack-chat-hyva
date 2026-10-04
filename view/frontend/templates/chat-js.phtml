@@ -49,6 +49,21 @@
  * message id already held, so nothing sent in between is missed. While polling,
  * every tenth poll also asks for the conversation's status, because the
  * messages endpoint answers 200 for a closed conversation and would never say so.
+ * Nothing at all is requested before the visitor first opens the bubble on a
+ * page (so an uncached page view costs the store nothing): the closed-panel poll,
+ * and with it the unread badge, starts only after that first open. A reply that
+ * arrives on a page where the bubble was never opened is shown when it is opened.
+ *
+ * THE TRANSCRIPT IS READ FROM THE START. The first history load of a conversation
+ * pages forward from id 0 with its own cursor, never from the newest id already
+ * held: a message sent before the history arrived (after a failed resume) must
+ * not hide everything said before it. Every message is placed in id order, so an
+ * earlier reply that loads late still sits above the message that followed it.
+ *
+ * A DOWNLOAD USES THE TOKEN OF THE CONVERSATION THE MESSAGE CAME FROM (each
+ * message keeps it), not the current one, so a file in a conversation the visitor
+ * ended - or one that has since been replaced by a new conversation - still
+ * downloads. The server lets a closed conversation's own token read its files.
  *
  * A STREAM CAN END ON PURPOSE. `event: idle` (nothing said for 30 minutes)
  * closes it; the open, visible panel then polls every 60 seconds instead (an agent
@@ -123,7 +138,8 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
     var REFUSAL_LABEL = {
         bfslc_upload_limit: 'uploadLimit',
         bfslc_upload_quota: 'uploadQuota',
-        bfslc_storage_full: 'storageFull'
+        bfslc_storage_full: 'storageFull',
+        bfslc_upload_busy: 'uploadBusy'
     };
     var STATUS_LABEL = { 401: 'ended', 410: 'ended', 403: 'uploadsOff', 413: 'tooLarge', 429: 'rateLimited' };
     var FINAL_REFUSALS = ['bfslc_upload_limit', 'bfslc_file_too_large', 'bfslc_bad_mime', 'bfslc_file_empty'];
@@ -648,11 +664,12 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             loadHistory(token) {
                 var self = this;
                 var page = 0;
+                var cursor = 0;
                 function next() {
                     page += 1;
                     return request('POST', rt.restRoot + 'messages', {
                         sessionToken: token,
-                        afterId: rt.lastId,
+                        afterId: cursor,
                         limit: HISTORY_PAGE
                     }).then(function (res) {
                         if (self.token !== token) {
@@ -666,7 +683,8 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                         }
                         var items = res.data.items || [];
                         items.forEach(function (item) {
-                            self.receive(item);
+                            self.receive(item, token);
+                            cursor = Math.max(cursor, toInt(item && item.id));
                         });
                         if (items.length === HISTORY_PAGE && page < HISTORY_MAX_PAGES) {
                             return next();
@@ -744,12 +762,16 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     resent: false,
                     goneRetried: false,
                     noRetry: false,
-                    retryWaiting: false
+                    retryWaiting: false,
+                    token: ''
                 });
             },
 
-            apply(msg, raw) {
+            apply(msg, raw, token) {
                 var dir = text(raw.direction);
+                if (typeof token === 'string' && token !== '') {
+                    msg.token = token;
+                }
                 var settled = msg.id > 0 && msg.id === toInt(raw.id) && msg.deliveryStatus === 'delivered';
                 msg.id = toInt(raw.id);
                 msg.direction = ROW_CLASS[dir] ? dir : 'system';
@@ -844,14 +866,14 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                         }
                     } else {
                         (res.data.items || []).forEach(function (item) {
-                            self.receive(item);
+                            self.receive(item, token);
                         });
                     }
                     self.scheduleSettle();
                 });
             },
 
-            receive(raw) {
+            receive(raw, token) {
                 var id = raw ? toInt(raw.id) : 0;
                 if (id <= 0) {
                     return;
@@ -863,20 +885,20 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 if (knownKey) {
                     var known = this.byKey(knownKey);
                     if (known) {
-                        this.apply(known, raw);
+                        this.apply(known, raw, token);
                     }
                     return;
                 }
                 if (text(raw.direction) === 'outbound') {
                     var pending = this.pendingMatch(raw);
                     if (pending) {
-                        this.apply(pending, raw);
+                        this.apply(pending, raw, token);
                         rt.seen[id] = pending.key;
                         return;
                     }
                 }
                 rt.seq += 1;
-                this.messages.push(this.decorate({
+                var fresh = this.decorate({
                     key: 'm' + id,
                     id: id,
                     kind: 'text',
@@ -892,14 +914,26 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     resent: false,
                     goneRetried: false,
                     noRetry: false,
-                    retryWaiting: false
-                }));
-                this.apply(this.byKey('m' + id), raw);
+                    retryWaiting: false,
+                    token: ''
+                });
+                this.insertInOrder(fresh);
+                this.apply(this.byKey('m' + id), raw, token);
                 rt.seen[id] = 'm' + id;
                 if (!this.isOpen && text(raw.direction) !== 'outbound') {
                     this.unreadCount += 1;
                 }
                 this.scrollLog();
+            },
+
+            insertInOrder(msg) {
+                for (var i = 0; i < this.messages.length; i++) {
+                    if (this.messages[i].id > msg.id) {
+                        this.messages.splice(i, 0, msg);
+                        return;
+                    }
+                }
+                this.messages.push(msg);
             },
 
             pendingMatch(raw) {
@@ -915,7 +949,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 return null;
             },
 
-            confirm(key, data) {
+            confirm(key, data, token) {
                 var id = data ? toInt(data.id) : 0;
                 var msg = this.byKey(key);
                 if (!msg) {
@@ -926,11 +960,11 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     this.removeKey(key);
                     var known = this.byKey(rt.seen[id]);
                     if (known) {
-                        this.apply(known, data);
+                        this.apply(known, data, token);
                     }
                     return;
                 }
-                this.apply(msg, data || {});
+                this.apply(msg, data || {}, token);
                 if (id > 0) {
                     rt.seen[id] = key;
                     if (id > rt.lastId) {
@@ -1067,7 +1101,8 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     resent: false,
                     goneRetried: false,
                     noRetry: false,
-                    retryWaiting: false
+                    retryWaiting: false,
+                    token: ''
                 });
             },
 
@@ -1105,7 +1140,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                         return null;
                     }
                     if (res.ok) {
-                        self.confirm(key, res.data);
+                        self.confirm(key, res.data, used);
                         self.accepted(used);
                         return null;
                     }
@@ -1150,7 +1185,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             openAttachment() {
                 var msg = this.byKey(this.message.key);
                 var self = this;
-                var token = this.token;
+                var token = msg ? msg.token : '';
                 if (!msg || token === '' || !isAllowedAttachmentUrl(msg.attachmentUrl, rt.origins)) {
                     return;
                 }
@@ -1161,9 +1196,6 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 }).then(function (response) {
                     return response.ok ? response.blob() : Promise.reject(response);
                 }).then(function (blob) {
-                    if (self.token !== token) {
-                        return;
-                    }
                     var url = URL.createObjectURL(blob);
                     rt.blobUrls.push(url);
                     var link = document.createElement('a');
@@ -1174,9 +1206,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     link.click();
                     link.remove();
                 }).catch(function () {
-                    if (self.token === token) {
-                        self.notice = t('genericError');
-                    }
+                    self.notice = t('genericError');
                 });
             },
 
@@ -1271,7 +1301,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                         data = null;
                     }
                     if (data) {
-                        self.receive(data);
+                        self.receive(data, token);
                     }
                 });
                 source.addEventListener('closed', function () {
@@ -1371,7 +1401,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                         return null;
                     }
                     (res.data.items || []).forEach(function (item) {
-                        self.receive(item);
+                        self.receive(item, token);
                     });
                     if (rt.streamEnd === 'idle' && rt.lastId > before && self.isOpen && !document.hidden) {
                         rt.streamEnd = '';

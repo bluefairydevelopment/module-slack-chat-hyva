@@ -156,6 +156,65 @@ class TheReleaseGateIsArmedTest extends TestCase
         self::assertStringNotContainsString('uncommitted', $err);
     }
 
+    /**
+     * The gates are RUN, not only named: a tag push through the real hook, with a
+     * MAGENTO_ROOT whose vendor/bin/phpunit exits 1, is refused at phpunit and never
+     * reaches phpcs. The same push with phpunit exiting 0 passes every gate, so the
+     * refusal is phpunit's exit code and nothing else. composer and node are stand-ins
+     * that exit 0, so only the tool under test decides.
+     *
+     * @return void
+     */
+    public function testATagIsRefusedWhenPhpunitFails(): void
+    {
+        [$status, $err] = self::runTagThroughTheGates(1);
+        self::assertSame(1, $status, 'a tag was pushed over a failing phpunit');
+        self::assertStringContainsString('Tag push refused: phpunit exited 1', $err);
+        self::assertStringContainsString(
+            'pre-push: composer-validate exit 0',
+            $err,
+            'CONTROL: the gates before phpunit ran'
+        );
+        self::assertStringContainsString(
+            'pre-push: node-test exit 0',
+            $err,
+            'CONTROL: the JavaScript gate ran and passed first'
+        );
+        self::assertStringNotContainsString('phpcs exit', $err, 'the hook went on to phpcs after phpunit failed');
+
+        [$status, $err] = self::runTagThroughTheGates(0);
+        self::assertSame(0, $status, 'CONTROL: the same tag with a passing phpunit was refused: ' . $err);
+        self::assertStringContainsString('pre-push: phpunit exit 0', $err);
+        self::assertStringContainsString(
+            'pre-push: phpstan exit 0',
+            $err,
+            'CONTROL: every gate ran on the passing push'
+        );
+    }
+
+    /**
+     * A skipped test must stop a tag, not pass quietly: a test that needs a PHP
+     * extension the gate machine lacks would otherwise measure nothing and still
+     * read as green. phpunit.xml.dist sets failOnSkipped; this runs a planted
+     * skipping test under that configuration (it must fail), then under the same
+     * configuration with the attribute turned off (it must pass, or the first run
+     * proves nothing).
+     *
+     * @return void
+     */
+    public function testASkippedTestFailsTheSuite(): void
+    {
+        $config = (string) file_get_contents(self::root() . '/phpunit.xml.dist');
+        self::assertStringContainsString('failOnSkipped="true"', $config, 'phpunit.xml.dist lets a skipped test pass');
+
+        self::assertSame(1, self::runPlantedSkip($config), 'a skipped test passed under phpunit.xml.dist');
+        self::assertSame(
+            0,
+            self::runPlantedSkip(str_replace('failOnSkipped="true"', 'failOnSkipped="false"', $config)),
+            'CONTROL: the planted run fails for a reason other than the skip'
+        );
+    }
+
     public function testThisCloneIsWiredToTheHook(): void
     {
         $out = [];
@@ -225,6 +284,73 @@ class TheReleaseGateIsArmedTest extends TestCase
             . '| env -u MAGENTO_ROOT bash ' . escapeshellarg(self::hookPath())
             . ' >/dev/null 2>' . escapeshellarg($dir . '.err');
         return self::runScript($script, $dir, $dir . '.err');
+    }
+
+    /**
+     * Push a tag of a clean HEAD through the hook with stand-in tools. They live
+     * under .git/, so the working tree stays clean and the repository's removal
+     * takes them with it; the hook's run directory goes there too (TMPDIR).
+     *
+     * @param int $phpunitExit what the stand-in vendor/bin/phpunit exits with
+     * @return array{0: int, 1: string}
+     */
+    private static function runTagThroughTheGates(int $phpunitExit): array
+    {
+        $dir = sys_get_temp_dir() . '/slackchathyva-tag-gates-' . bin2hex(random_bytes(6));
+        $script = self::repoPreamble($dir);
+        $script[] = 'mkdir -p Test/Js && printf "" > Test/Js/a.test.cjs';
+        $script[] = 'printf ' . escapeshellarg("# Changelog\n\n## [9.9.9] - today\n") . ' > CHANGELOG.md';
+        $script[] = 'git add -A && git commit -q -m one';
+        $script[] = 'sha=$(git rev-parse HEAD)';
+        $script[] = 'mkdir -p .git/fake-root/vendor/bin .git/fake-bin .git/tmp';
+        $script[] = 'printf "#!/bin/sh\nexit ' . $phpunitExit . '\n" > .git/fake-root/vendor/bin/phpunit';
+        $script[] = 'for t in phpcs phpstan; do printf "#!/bin/sh\nexit 0\n" > .git/fake-root/vendor/bin/$t; done';
+        $script[] = 'for t in composer node; do printf "#!/bin/sh\nexit 0\n" > .git/fake-bin/$t; done';
+        $script[] = 'chmod +x .git/fake-root/vendor/bin/* .git/fake-bin/*';
+        $script[] = 'set +e';
+        $script[] = 'printf "refs/tags/v9.9.9 $sha refs/tags/v9.9.9 0000000000000000000000000000000000000000\n" '
+            . '| env PATH="$PWD/.git/fake-bin:$PATH" MAGENTO_ROOT="$PWD/.git/fake-root" TMPDIR="$PWD/.git/tmp" bash '
+            . escapeshellarg(self::hookPath()) . ' >/dev/null 2>' . escapeshellarg($dir . '.err');
+        return self::runScript($script, $dir, $dir . '.err');
+    }
+
+    /**
+     * Run MAGENTO_ROOT's phpunit over one planted test class (one passing test, one
+     * skipped) under the given configuration, in a throwaway directory laid out as
+     * the configuration expects (an empty Test/bootstrap.php, Test/Unit).
+     *
+     * @param string $configXml
+     * @return int phpunit's exit status
+     */
+    private static function runPlantedSkip(string $configXml): int
+    {
+        $phpunit = rtrim((string) getenv('MAGENTO_ROOT'), '/') . '/vendor/bin/phpunit';
+        self::assertTrue(is_executable($phpunit), "no phpunit at {$phpunit}: set MAGENTO_ROOT");
+
+        $dir = sys_get_temp_dir() . '/slackchathyva-skip-gate-' . bin2hex(random_bytes(6));
+        mkdir($dir . '/Test/Unit', 0700, true);
+        file_put_contents($dir . '/phpunit.xml.dist', $configXml);
+        file_put_contents($dir . '/Test/bootstrap.php', "<?php\n");
+        file_put_contents(
+            $dir . '/Test/Unit/PlantedSkipTest.php',
+            "<?php\nclass PlantedSkipTest extends \\PHPUnit\\Framework\\TestCase\n{\n"
+            . "    public function testPasses(): void\n    {\n        self::assertSame(1, 1);\n    }\n"
+            . "    public function testSkips(): void\n    {\n        self::markTestSkipped('planted');\n    }\n}\n"
+        );
+
+        $out = [];
+        $status = 0;
+        // Reviewed and kept: whether the configuration fails a skip is established only
+        // by running phpunit.
+        // phpcs:ignore Magento2.Security.InsecureFunction
+        exec(escapeshellarg($phpunit) . ' -c ' . escapeshellarg($dir . '/phpunit.xml.dist') . ' 2>&1', $out, $status);
+        // phpcs:ignore Magento2.Security.InsecureFunction
+        exec('rm -rf ' . escapeshellarg($dir));
+
+        $report = implode("\n", $out);
+        self::assertMatchesRegularExpression('/Skipped: 1|OK, but/', $report, 'CONTROL: the planted skip did not run: ' . $report);
+
+        return $status;
     }
 
     /**

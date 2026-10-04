@@ -134,7 +134,7 @@ class WidgetViewModelTest extends TestCase
                 'retry', 'deliveryPending', 'notDeliveredRetrying', 'notDelivered', 'endChat', 'ended', 'chatEnded',
                 'newConversation', 'loading', 'networkError', 'genericError', 'rateLimited', 'unavailable', 'tooLarge',
                 'typeNotAllowed', 'fileEmpty', 'fileUnreadable', 'uploadsOff', 'uploadLimit', 'uploadQuota',
-                'storageFull', 'unread',
+                'storageFull', 'uploadBusy', 'unread',
             ],
             array_keys($boot['i18n']),
             'the label set changed: check every key chat-js.phtml and widget.phtml read is still supplied'
@@ -310,7 +310,7 @@ class WidgetViewModelTest extends TestCase
         // Labels chosen by error code are named in the REFUSAL_LABEL table, not in a t() call.
         preg_match('/var REFUSAL_LABEL = \\{([^}]*)\\}/', $component, $table);
         preg_match_all("/: '([A-Za-z]+)'/", $table[1] ?? '', $refusals);
-        self::assertSame(['uploadLimit', 'uploadQuota', 'storageFull'], $refusals[1], 'CONTROL: the refusal label table was read');
+        self::assertSame(['uploadLimit', 'uploadQuota', 'storageFull', 'uploadBusy'], $refusals[1], 'CONTROL: the refusal label table was read');
         $js[1] = array_merge($js[1], $refusals[1]);
         preg_match_all("/\\\$i18n\\['([A-Za-z]+)'\\]/", (string) file_get_contents($templates . 'widget.phtml'), $php);
         $read = array_values(array_unique(array_merge($js[1], $php[1])));

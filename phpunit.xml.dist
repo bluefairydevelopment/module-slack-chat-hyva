@@ -14,6 +14,14 @@
     The suite runs on PHPUnit 9.6 (Magento 2.4.8) AND 12 (2.4.9): data providers are
     declared twice, as a docblock annotation (9.6) and an attribute (12), and nothing
     uses getMockForAbstractClass() or MockBuilder::addMethods(), which 12 removed.
+
+    Test/Playwright (the storefront browser specs) is not in this suite, nor in the
+    release gate: it needs a running Hyvä store. Run it on the AWS test rig before a
+    release.
+
+    failOnSkipped: a skipped test has measured nothing, so it fails the run (and with
+    it the release gate in .githooks/pre-push) instead of passing unseen. A test that
+    needs something the machine lacks must stop a tag, not be skipped by it.
 -->
 <phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/9.6/phpunit.xsd"
@@ -21,7 +29,8 @@
          colors="true"
          beStrictAboutTestsThatDoNotTestAnything="true"
          failOnWarning="true"
-         failOnRisky="true">
+         failOnRisky="true"
+         failOnSkipped="true">
     <testsuites>
         <testsuite name="BlueFairy_SlackChatHyva">
             <directory>Test/Unit</directory>

@@ -51,6 +51,7 @@ const I18N = {
     newConversation: 'Your previous conversation had ended, so this message started a new one.',
     notDeliveredRetrying: 'Not delivered yet. We will keep trying for about 48 minutes.', notDelivered: 'Not delivered.',
     uploadLimit: 'Upload limit reached', uploadQuota: 'Upload quota reached', storageFull: 'Storage full',
+    uploadBusy: 'Another file is still uploading. Try again in a moment.',
 };
 
 /**
@@ -205,19 +206,34 @@ test('a transient failure resuming the stored conversation lets the next open tr
     assert.equal(h.c.booted, true);
 });
 
-test('after a failed resume, a message that goes through loads the history and connects', async () => {
-    const h = setup((p) => (p === 'session/status' ? [0, null]
+test('after a failed resume, a message that goes through loads the WHOLE history, in id order, and connects', async () => {
+    // The fake honours afterId, as the server does: asking from the sent message's
+    // id would return nothing earlier.
+    const transcript = [inbound(5, 'earlier reply'), out(12, 'hi')];
+    const h = setup((p, body) => (p === 'session/status' ? [0, null]
         : p === 'message' ? [200, out(12, 'hi')]
-            : p === 'messages' ? items(inbound(5, 'earlier reply')) : [500, null]), { token: TOKEN });
+            : p === 'messages' ? items(...transcript.filter((m) => m.id > body.afterId)) : [500, null]), { token: TOKEN });
     h.c.open();
     await settle();
     assert.equal(h.sources.length, 0, 'CONTROL: the resume failed');
     await sendText(h, 'hi');
     assert.deepEqual(h.paths(), ['session/status', 'message', 'messages']);
     assert.equal(h.calls[1].body.sessionToken, TOKEN);
+    assert.equal(h.calls[2].body.afterId, 0, 'the history was asked for after the message just sent, so the earlier transcript never appears');
     assert.equal(h.sources.length, 1, 'a successful send after a failed resume never connected');
     assert.equal(h.c.hasSession, true, 'End chat stays hidden: the session was never marked active');
-    assert.deepEqual(h.c.messages.map((m) => m.body), ['hi', 'earlier reply']);
+    assert.deepEqual(h.c.messages.map((m) => m.body), ['earlier reply', 'hi'], 'the earlier reply is shown after the message that followed it');
+    assert.deepEqual(h.c.messages.map((m) => m.id), [5, 12]);
+});
+
+test('a message received out of order is placed by id', async () => {
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? items(inbound(3, 'three'), inbound(9, 'nine')) : [500, null]), { token: TOKEN });
+    h.c.open();
+    await settle();
+    const frame = (raw) => h.sources[0].listeners.message({ data: JSON.stringify(raw) });
+    frame(inbound(6, 'six'));
+    frame(inbound(11, 'eleven'));
+    assert.deepEqual(h.c.messages.map((m) => m.body), ['three', 'six', 'nine', 'eleven']);
 });
 
 /* --------------------------------------------------- finding 4: End chat */
@@ -969,4 +985,46 @@ test('an upload type is compared case-insensitively, as Luma does', async () => 
     await settle();
     assert.equal(h.c.notice, '', 'an upper-case type was refused');
     assert.equal(h.calls.find((x) => x.path === 'upload').body.mimeType, 'image/png');
+});
+
+/* -------------------------------- download token, upload lock refusal */
+
+test('Download uses the token of the conversation the message came from, after End chat and after a new one', async () => {
+    const file = Object.assign(inbound(2, ''), { attachment_url: 'https://shop.example/bluefairy_slc/file/download/id/2/', attachment_name: 'ok.png' });
+    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'session/close' ? [200, true]
+        : p === 'session' ? active(TOKEN2) : p === 'message' ? [200, out(30, body.body)]
+            : p === 'messages' ? items(file) : [500, null]), { token: TOKEN });
+    h.c.open();
+    await settle();
+    const msg = h.c.messages[0];
+    assert.equal(msg.canDownload, true, 'CONTROL: the attachment is offered');
+    assert.equal(msg.token, TOKEN);
+
+    h.c.endChat();
+    await settle();
+    assert.equal(h.c.token, '', 'CONTROL: the conversation ended');
+    h.c.message = msg;
+    h.c.openAttachment();
+    await settle();
+    assert.deepEqual(h.fetched.map((f) => f.init.headers['X-Bfslc-Token']), [TOKEN], 'Download after End chat did nothing');
+
+    await sendText(h, 'new one');
+    assert.equal(h.c.token, TOKEN2, 'CONTROL: a new conversation started');
+    h.c.message = msg;
+    h.c.openAttachment();
+    await settle();
+    assert.deepEqual(h.fetched.map((f) => f.init.headers['X-Bfslc-Token']), [TOKEN, TOKEN], 'the old file was asked for with the new conversation\'s token');
+    assert.equal(h.c.notice, '');
+    const sent = h.c.messages.find((m) => m.id === 30);
+    assert.equal(sent.token, TOKEN2, 'a message confirmed by a send does not carry the token it was sent with');
+});
+
+test('an upload refused because another file is still uploading has its own words and keeps Retry', async () => {
+    const reader = class { readAsDataURL() { this.result = 'data:image/png;base64,AAAA'; this.onload(); } };
+    const h = setup((p) => (p === 'session' ? active(TOKEN)
+        : p === 'upload' ? [429, { message: 'server words', parameters: { error_code: 'bfslc_upload_busy' } }] : items()), { FileReader: reader });
+    h.c.onFileChosen({ target: { files: [{ name: 'a.png', type: 'image/png', size: 10 }], value: 'x' } });
+    await settle();
+    assert.equal(h.c.messages[0].statusLabel, 'Not sent: Another file is still uploading. Try again in a moment.');
+    assert.equal(h.c.messages[0].canRetry, true, 'a busy upload lock lifts on its own; Retry must stay');
 });

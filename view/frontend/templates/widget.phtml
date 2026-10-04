@@ -22,6 +22,10 @@
  * region. The unread count is in the bubble's accessible name and in a polite
  * status region; the visual badge is aria-hidden so it is not read twice.
  *
+ * The log is a tab stop (tabindex 0) with a visible focus ring: it scrolls, and
+ * a keyboard user can scroll only what can take focus. Messages hold no other
+ * focusable element unless they carry a Download or Retry button.
+ *
  * Inputs are text-base (16px): below that iOS Safari zooms the page on focus.
  * Their maxlength is the server's limit (name 120, email 255 -
  * ChatSessionManagement), so nothing typed is silently cut.
@@ -81,10 +85,11 @@ $json = (string) json_encode($bootConfig, JSON_UNESCAPED_SLASHES | JSON_UNESCAPE
 
         <div x-ref="log"
              role="log"
+             tabindex="0"
              aria-live="polite"
              aria-relevant="additions text"
              :aria-busy="logBusy"
-             class="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+             class="flex-1 overflow-y-auto px-4 py-3 space-y-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500">
             <p x-show="hasNoMessages" class="text-sm text-gray-600"><?= $escaper->escapeHtml($i18n['intro']) ?></p>
             <template x-for="message in messages" :key="message.key">
                 <div :class="message.rowClass" data-bfslc-message>

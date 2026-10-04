@@ -86,8 +86,10 @@ bin/magento cache:flush
 On every page of a Hyvä store view **except** the checkout (`checkout_index_index`) and the
 order success page (`checkout_onepage_success`), when **Stores → Configuration → BlueFairy Integrations →
 Slack Live Chat → Advanced → Show the Chat Widget** is Yes for that store view **and Slack is
-connected** (a bot token or an incoming webhook) - a bubble that could only ever fail to start a
-conversation is not shown. The **Attach a file** link appears only when uploads are on and at
+connected** (a bot token or an incoming webhook) **and**, with a bot token, the store view has a
+**Default Channel ID** - a bubble that could only ever fail to start a conversation is not shown.
+Keep the widget off until **Test Connection** passes and a test conversation has made the round
+trip. The **Attach a file** link appears only when uploads are on and at
 least one file type is allowed. These rules, the page context below and every label are the base
 package's (`BlueFairy\SlackChat\Model\Widget\BootConfigProvider`), shared with the Luma widget,
 so the two storefronts behave the same. On a Luma store view
@@ -123,7 +125,10 @@ always inserted as text, never as HTML.
   stream occupies one PHP worker for its whole life, so the widget closes it when the visitor
   closes the panel or switches tab. With the panel closed (and a conversation in progress) the
   widget instead asks for new messages **every 30 seconds** - that is what keeps the unread
-  badge on the bubble current - and with the tab hidden it makes no requests at all. Reopening
+  badge on the bubble current - and with the tab hidden it makes no requests at all. That
+  closed-panel check starts only once the visitor has opened the bubble on the page: on a page
+  where it was never opened nothing is requested, so a reply that arrives meanwhile shows (with
+  no badge before) when the bubble is opened. Reopening
   the panel reconnects the stream from the newest message already shown, so nothing is missed.
   While polling, every tenth request also checks whether the conversation has been closed.
 - **Delivery statuses settle on their own.** The store retries a message Slack refused for
@@ -156,22 +161,38 @@ always inserted as text, never as HTML.
   message held; a stream that ends that way within 10 seconds of opening is treated as refused
   (3-second checks, the stream tried again after 60 seconds). If the same conversation is open in another tab, the newer tab takes the stream
   (`superseded`) and this one polls every 30 seconds while its panel is open, until the visitor
-  sends from it: then it takes the stream back.
+  sends from it: then it takes the stream back. If one visitor address already holds three live
+  streams (an office or school behind one address), a further tab or visitor gets none: its
+  widget checks every 3 seconds and tries the stream again later. Nobody's open stream is cut
+  off.
+- **The transcript is complete and in order.** A conversation's history is always loaded from
+  its first message, and every message is placed by its id - also when the visitor sent a
+  message before the history arrived (after a failed resume). A message an agent edits or
+  deletes in Slack shows its new text, or "(This message was removed.)", the next time the
+  history loads (reopening the chat, reloading the page), not live.
+- **A signed-in customer's conversation stays theirs.** After they sign out, the next person at
+  the same browser cannot read or continue it: the store answers 401, and the widget forgets the
+  token and starts afresh.
+- **One file at a time.** A file sent while another of the same conversation is still uploading
+  is refused with "Another file is still uploading. Please try again in a moment." (429
+  `bfslc_upload_busy`) and offers Retry, disabled for the 10 seconds the store asks.
 - **One tab's ending never touches another's conversation.** Ending a conversation forgets the
   stored token only if it is still that conversation's, so a newer conversation started in
   another tab is kept.
-- One inline script, about 49 KB uncompressed (about 9 KB gzipped), parsed but idle until
+- One inline script, about 50 KB uncompressed (about 9 KB gzipped), parsed but idle until
   Alpine starts. No external JavaScript, no web fonts, no images (the icons are inline SVG).
 - The bubble and panel are `position: fixed`, so they cause no layout shift.
 - The bubble has an accessible name that includes the unread count, the panel is a labelled
   non-modal dialog, and new messages - and a message's status changing, such as "Not sent" -
   are announced through a polite live region. The message list is marked `aria-busy` while the
   conversation's history loads. Every control, the file picker included, shows a visible
-  keyboard focus ring. Inputs use a 16 px font, so iOS Safari does not zoom the page when one
+  keyboard focus ring, and the message list itself is a tab stop (with the same ring) so it can
+  be scrolled from the keyboard. Inputs use a 16 px font, so iOS Safari does not zoom the page when one
   is focused.
 - **Attachments differ from the Luma widget on purpose.** A file in the conversation shows a
-  **Download** button that fetches it (with the conversation's token) only when clicked; nothing
-  is downloaded until the visitor asks. The Luma widget shows images inline, fetching each when
+  **Download** button that fetches it only when clicked, with the token of the conversation the
+  file belongs to - so it still downloads after the visitor ended that conversation or started a
+  new one; nothing is downloaded until the visitor asks. The Luma widget shows images inline, fetching each when
   it scrolls into view, and other files as the same kind of button. The base package's README
   lists every remaining difference between the two widgets.
 
@@ -182,7 +203,8 @@ always inserted as text, never as HTML.
 | The panel appears unstyled at the foot of the page | The theme CSS was not rebuilt after install (see above). |
 | No bubble at all | Widget disabled for the store view, or you are on the checkout/success page, or the store view uses a Luma theme. |
 | Bubble shows but does nothing; console shows a CSP error | A custom CSP header replaced Magento's. Allow the hash in `etc/csp_whitelist.xml`, or Magento's nonce. |
-| Replies arrive with a few seconds' delay | The base package's concurrent-stream cap is full; the widget is polling every 3 seconds and will retry the stream every 60. |
+| Replies arrive with a few seconds' delay | The base package's concurrent-stream cap is full, or the visitor's address already holds three streams; the widget is polling every 3 seconds and will retry the stream every 60. |
+| No unread badge on a page where the bubble was never opened | Expected: nothing is requested until the bubble is first opened on a page. |
 | After a long quiet spell a reply takes up to a minute to appear | Expected: after 30 minutes with no message the stream ends (`idle`) and the open panel checks every 60 seconds until the visitor sends or reopens it. |
 | The unread badge takes up to half a minute to appear | Expected: with the panel closed the widget checks every 30 seconds rather than holding a stream open (see Performance). |
 | A message reads "Not delivered yet. We will keep trying for about 48 minutes." | The store saved it but Slack refused it or could not be reached. The store retries for about 48 minutes; check the Slack credentials and the cron. |

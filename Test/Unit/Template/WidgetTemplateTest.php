@@ -244,6 +244,23 @@ class WidgetTemplateTest extends TestCase
         self::assertStringContainsString(':disabled="message.retryWaiting"', $retry[0]);
     }
 
+    /**
+     * The log scrolls (overflow-y-auto), and a keyboard user can scroll only an
+     * element that takes focus - so it is a tab stop, and shows that it has focus.
+     */
+    public function testTheLogCanBeScrolledFromTheKeyboard(): void
+    {
+        $html = $this->render(true, self::boot());
+
+        self::assertSame(1, preg_match('#<div x-ref="log"[^>]*>#', $html, $log), 'CONTROL: the log is rendered');
+        self::assertSame(1, preg_match('#class="([^"]*)"#', $log[0], $class));
+        $classes = preg_split('/\s+/', $class[1]) ?: [];
+        self::assertContains('overflow-y-auto', $classes, 'CONTROL: the log is the scrolling region');
+        self::assertStringContainsString(' tabindex="0"', $log[0], 'the scrolling log cannot take keyboard focus');
+        self::assertContains('focus-visible:ring-2', $classes, 'the log shows no ring when it has keyboard focus');
+        self::assertContains('focus-visible:ring-blue-500', $classes);
+    }
+
     public function testNoDirectiveInsertsHtmlOrAssigns(): void
     {
         $names = array_column(self::directives(), 0);
