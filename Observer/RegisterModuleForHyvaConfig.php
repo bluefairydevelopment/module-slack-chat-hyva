@@ -15,8 +15,8 @@ use Magento\Framework\Event\ObserverInterface;
 /**
  * Tell Hyvä's `hyva-config` generator where this module's Tailwind sources live.
  *
- * Ported from BlueFairy_JiraHyva, where M2MAP-359 measured what its absence
- * costs: 43 of 110 distinct classes in that module's templates emitted no CSS
+ * Ported from BlueFairy_JiraHyva, where the cost of its absence was measured:
+ * 43 of 110 distinct classes in that module's templates emitted no CSS
  * on Hyvä/default, confirmed live (a button with padding-top 0px, gap: normal),
  * with no console error and no 404.
  *
@@ -27,7 +27,7 @@ use Magento\Framework\Event\ObserverInterface;
  * Registration is necessary and NOT sufficient: the theme's CSS must be rebuilt
  * afterwards (README, "Rebuild the theme CSS"), and the @source glob in
  * view/frontend/tailwind/module.css is what actually puts the templates into
- * Tailwind's content scan (M2MAP-474).
+ * Tailwind's content scan.
  */
 class RegisterModuleForHyvaConfig implements ObserverInterface
 {

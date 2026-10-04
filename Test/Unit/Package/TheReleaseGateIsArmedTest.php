@@ -12,7 +12,7 @@ use PHPUnit\Framework\TestCase;
 use RuntimeException;
 
 /**
- * M2MAP-597 / M2MAP-598. A tag is a release, and a release must not be cut over a
+ * A tag is a release, and a release must not be cut over a
  * red suite. This package's gate is .githooks/pre-push; this test holds the facts
  * that decide whether that gate exists: the hook is TRACKED, it RUNS THE GATES on a
  * tag push, THIS CLONE is wired to it, and it cannot reach a merchant (in a

@@ -169,7 +169,7 @@ class WidgetViewModelTest extends TestCase
     }
 
     /**
-     * Finding 6: uploads switched on with no allowed type can only ever be refused.
+     * Uploads switched on with no allowed type can only ever be refused.
      */
     public function testUploadsAreOffWhenNoTypeIsAllowed(): void
     {

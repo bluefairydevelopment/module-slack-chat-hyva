@@ -1,8 +1,8 @@
-# Gate 1 static analysis for module-slack-chat-hyva (plan: level 6).
+# Gate 1 static analysis for module-slack-chat-hyva (level 6).
 #   MAGENTO_ROOT=~/Sites/magento-vanilla ~/Sites/magento-vanilla/vendor/bin/phpstan analyse -c phpstan.neon.dist
 #
 # Test/bootstrap.php refuses to analyse when any imported Factory/Extension class
-# is unresolved (M2MAP-682), so a 0 here was measured with real classes.
+# is unresolved, so a 0 here was measured with real classes.
 #
 # DELIBERATELY EMPTY OF ignoreErrors: two shipped classes, a true zero to start
 # from. The templates are not analysed (phpstan does not read .phtml); what they

@@ -185,7 +185,7 @@ test('nothing is requested until the bubble is opened, even when a token is stor
     assert.deepEqual(h.paths().slice(0, 2), ['session/status', 'messages'], 'CONTROL: opening does request');
 });
 
-/* ----------------------------------------------- finding 3: failed resume */
+/* ----------------------------------------------------------- failed resume */
 
 test('a transient failure resuming the stored conversation lets the next open try again', async () => {
     let statusAnswer = [503, { message: 'down' }];
@@ -236,7 +236,7 @@ test('a message received out of order is placed by id', async () => {
     assert.deepEqual(h.c.messages.map((m) => m.body), ['three', 'six', 'nine', 'eleven']);
 });
 
-/* --------------------------------------------------- finding 4: End chat */
+/* ---------------------------------------------------------------- End chat */
 
 test('End chat that the server refuses keeps the conversation and says so', async () => {
     let closeAnswer = [503, { message: 'down' }];
@@ -269,7 +269,7 @@ test('End chat on a conversation the server already closed (410) reports it ende
     assert.equal(h.c.notice, '');
 });
 
-/* -------------------------- finding 5 + A7: polling, closed panel, hidden tab */
+/* ------------------------------------- polling, closed panel, hidden tab */
 
 test('the stream is open only while the panel is open and the tab visible; closed = 30 s poll', async () => {
     const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? items(inbound(7, 'hello')) : [500, null]), { token: TOKEN });
@@ -345,7 +345,7 @@ test('every 10th poll checks the status, and a closed conversation is noticed', 
     assert.deepEqual(h.intervalMs(), []);
 });
 
-/* ------------------------------------------- finding 11: token changes */
+/* ------------------------------------------------------- token changes */
 
 test('a poll answer for a conversation that has since ended is dropped', async () => {
     let release;
@@ -395,7 +395,7 @@ test('a late "gone" for the old conversation does not drop its replacement', asy
     assert.equal(h.paths().filter((p) => p === 'session').length, 1, 'a needless third conversation was started');
 });
 
-/* ---------------------------------------------------- finding 13 bundle */
+/* ------------------------------------- invalid tokens, attachments, URLs */
 
 test('400 bfslc_invalid_token on resume is treated as gone; another 400 is not', async () => {
     const h = setup((p) => (p === 'session/status'
@@ -551,7 +551,7 @@ test('event: idle closes the stream; the open panel polls every 60 s until a sen
     h.sources[0].listeners.idle({});
     await settle();
     assert.equal(h.sources[0].closed, true, 'an idle stream was left open');
-    assert.deepEqual(h.intervalMs(), [60000], 'D5: an idle open panel does not poll every 60 s');
+    assert.deepEqual(h.intervalMs(), [60000], 'an idle open panel does not poll every 60 s');
     assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [], 'an idle stream is scheduled to reconnect');
     assert.equal(h.sources.length, 1);
 
@@ -563,7 +563,7 @@ test('event: idle closes the stream; the open panel polls every 60 s until a sen
     await settle();
     h.c.close();
     await settle();
-    assert.deepEqual(h.intervalMs(), [30000], 'D5: the closed-panel 30 s poll stopped for an idle conversation');
+    assert.deepEqual(h.intervalMs(), [30000], 'the closed-panel 30 s poll stopped for an idle conversation');
     h.c.open();
     await settle();
     assert.equal(h.sources.length, 3, 'a reopen did not reconnect');
@@ -609,7 +609,7 @@ test('an ending from a stream that is no longer current is ignored', async () =>
 
 /* ----------------------------------------------- upload refusals */
 
-test('upload refusals (D6): own label by code, server words for a module 4xx, status wording otherwise, a 5xx generic', async () => {
+test('upload refusals: own label by code, server words for a module 4xx, status wording otherwise, a 5xx generic', async () => {
     const cases = [
         [413, 'bfslc_upload_limit', 'Not sent: Upload limit reached'],
         [429, 'bfslc_upload_quota', 'Not sent: Upload quota reached'],
@@ -718,9 +718,9 @@ test('a failed message without a retrying field is taken as still retrying: no R
     assert.equal(lost.canRetry, true, 'CONTROL: an explicit retrying=false does offer Retry');
 });
 
-/* ------------------------------ cure round 2: parity with Luma (D5, D6) */
+/* ----------------------- parity with Luma: idle, refusals, Retry, focus */
 
-test('W2: an ended conversation forgets only its own token, not one another tab stored since', async () => {
+test('an ended conversation forgets only its own token, not one another tab stored since', async () => {
     const h = setup((p) => (p === 'session/status' ? active(TOKEN) : items()), { token: TOKEN });
     h.c.open();
     await settle();
@@ -738,7 +738,7 @@ test('W2: an ended conversation forgets only its own token, not one another tab 
     assert.equal('bfslc_token_default' in k.store, false, 'CONTROL: its own token is forgotten');
 });
 
-test('W5: a reconnect after idle that an older server refuses with 204 stays on the 60 s idle poll', async () => {
+test('a reconnect after idle that an older server refuses with 204 stays on the 60 s idle poll', async () => {
     const h = setup((p) => (p === 'session/status' ? active(TOKEN) : items()), { token: TOKEN });
     h.c.open();
     await settle();
@@ -766,7 +766,7 @@ test('W5: a reconnect after idle that an older server refuses with 204 stays on 
     assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [60000]);
 });
 
-test('D5: a reconnect answered with 200 + event: idle stays on the 60 s poll', async () => {
+test('a reconnect answered with 200 + event: idle stays on the 60 s poll', async () => {
     const h = setup((p) => (p === 'session/status' ? active(TOKEN) : items()), { token: TOKEN });
     h.c.open();
     await settle();
@@ -782,7 +782,7 @@ test('D5: a reconnect answered with 200 + event: idle stays on the 60 s poll', a
     assert.deepEqual(h.intervalMs(), [60000]);
 });
 
-test('D5: an idle poll that finds a new message leaves idle and reopens the stream after it', async () => {
+test('an idle poll that finds a new message leaves idle and reopens the stream after it', async () => {
     let next = items();
     const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? next : [500, null]), { token: TOKEN });
     h.c.open();
@@ -799,7 +799,7 @@ test('D5: an idle poll that finds a new message leaves idle and reopens the stre
     assert.deepEqual(h.intervalMs(), []);
 });
 
-test('W6: a superseded tab takes the stream back when the visitor sends from it', async () => {
+test('a superseded tab takes the stream back when the visitor sends from it', async () => {
     const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? [200, out(8, body.body)] : items()), { token: TOKEN });
     h.c.open();
     await settle();
@@ -850,7 +850,7 @@ test('the stream listens for the events the server sends (StreamRunner::EVENT_*)
     assert.equal(h.sources[0].listeners.expired, undefined, 'a listener for an event the server never sends');
 });
 
-test('W3/D6: a refused email shows the server\'s words, keeps the intro fields, and Retry uses the fix', async () => {
+test('a refused email shows the server\'s words, keeps the intro fields, and Retry uses the fix', async () => {
     const h = setup((p, body) => (p === 'availability/0' ? [200, {}]
         : p === 'session' ? (body.email === 'jane@example.com' ? active(TOKEN)
             : [400, { message: 'Please enter a valid email address.', parameters: { error_code: 'bfslc_invalid_email' } }])
@@ -870,10 +870,10 @@ test('W3/D6: a refused email shows the server\'s words, keeps the intro fields, 
     await settle();
     assert.deepEqual(h.calls.filter((x) => x.path === 'session').map((x) => x.body.email), ['jane@exämple.de', 'jane@example.com']);
     assert.equal(h.c.messages[0].id, 10);
-    assert.deepEqual(h.focused, ['input'], 'W10: Retry hid under focus and focus was not moved');
+    assert.deepEqual(h.focused, ['input'], 'Retry hid under focus and focus was not moved');
 });
 
-test('W9/D6: a refused text message - 5xx never in the server\'s words, a bare 4xx in the widget\'s, no answer is a connection problem', async () => {
+test('a refused text message - 5xx never in the server\'s words, a bare 4xx in the widget\'s, no answer is a connection problem', async () => {
     const cases = [
         [[500, { message: 'SQLSTATE[42S02]: Base table or view not found' }], 'Not sent: Oops'],
         [[500, { message: 'SQLSTATE[HY000] leaked', parameters: { error_code: 'bfslc_unavailable' } }], 'Not sent: Oops'],
@@ -891,7 +891,7 @@ test('W9/D6: a refused text message - 5xx never in the server\'s words, a bare 4
     }
 });
 
-test('D6: a 410 resend says where the new conversation started, before the message', async () => {
+test('a 410 resend says where the new conversation started, before the message', async () => {
     const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'session' ? active(TOKEN2)
         : p === 'message' ? (body.sessionToken === TOKEN ? [410, { message: 'ended', parameters: { error_code: 'bfslc_session_closed' } }] : [200, out(20, body.body)])
             : items(inbound(3, 'old'))), { token: TOKEN });
@@ -904,7 +904,7 @@ test('D6: a 410 resend says where the new conversation started, before the messa
     assert.equal(h.store.bfslc_token_default, TOKEN2);
 });
 
-test('W7: a message resent after a 410 still offers Retry once the server later gives up on it', async () => {
+test('a message resent after a 410 still offers Retry once the server later gives up on it', async () => {
     const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'session' ? active(TOKEN2)
         : p === 'message' ? (body.sessionToken === TOKEN ? [410, { message: 'ended' }] : [200, out(21, body.body, 'pending')])
             : items()), { token: TOKEN });
@@ -918,7 +918,7 @@ test('W7: a message resent after a 410 still offers Retry once the server later 
     assert.equal(msg.canRetry, true, 'the 410 resend used up the Retry the docblock promises');
 });
 
-test('W13: no Retry for a refusal that cannot change; a 429 Retry-After keeps Retry disabled that long', async () => {
+test('no Retry for a refusal that cannot change; a 429 Retry-After keeps Retry disabled that long', async () => {
     const reader = class { readAsDataURL() { this.result = 'data:image/png;base64,AAAA'; this.onload(); } };
     const h = setup((p) => (p === 'session' ? active(TOKEN) : p === 'upload' ? [413, { message: 'x', parameters: { error_code: 'bfslc_upload_limit' } }] : items()), { FileReader: reader });
     h.c.onFileChosen({ target: { files: [{ name: 'a.png', type: 'image/png', size: 10 }], value: 'x' } });
@@ -948,7 +948,7 @@ test('W13: no Retry for a refusal that cannot change; a 429 Retry-After keeps Re
     assert.equal(k.c.messages[0].id, 30);
 });
 
-test('W10: sending moves focus back to the message box; End chat too once it hides', async () => {
+test('sending moves focus back to the message box; End chat too once it hides', async () => {
     const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? [200, out(5, body.body)]
         : p === 'session/close' ? [200, true] : items()), { token: TOKEN });
     h.c.open();
@@ -963,7 +963,7 @@ test('W10: sending moves focus back to the message box; End chat too once it hid
     assert.deepEqual(h.focused, ['input']);
 });
 
-test('W10: the log is aria-busy while the transcript loads', async () => {
+test('the log is aria-busy while the transcript loads', async () => {
     let release;
     const h = setup((p) => (p === 'session/status' ? active(TOKEN)
         : p === 'messages' ? new Promise((r) => { release = () => r(items(inbound(1, 'hi'))); }) : [500, null]), { token: TOKEN });

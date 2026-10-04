@@ -214,7 +214,7 @@ class WidgetTemplateTest extends TestCase
     }
 
     /**
-     * Round-2 parity with the Luma widget (D6, W10, W11): the availability banner
+     * Parity with the Luma widget: the availability banner
      * is a status region; the log is aria-busy while the transcript loads; the
      * inputs are 16px (text-base - below that iOS zooms the page on focus) and
      * take what the server takes (name 120, email 255); a Retry that a 429/503

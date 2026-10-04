@@ -18,11 +18,11 @@ use PHPUnit\Framework\TestCase;
  *
  * Ported from module-jira-hyva, which shipped that file with **no `@source` at
  * all** - 1,466 bytes of comment, including a comment explaining that the file is
- * what brings the classes in (M2MAP-474). Measured on hyvatest against the SERVED
+ * what brings the classes in. Measured on hyvatest against the SERVED
  * stylesheet: 39 of 110 distinct class tokens had no rule, with no console error
  * and no 404, on a page every other gate passed.
  *
- * Two defects in the ORIGINAL test are not ported (M2MAP-474, cured first in
+ * Two defects in the ORIGINAL test are not ported (fixed first in
  * module-cart-products-hyva 9877e02):
  *
  *  - its comment stripper recognised only a `/**` opener, so a directive

@@ -13,7 +13,7 @@
 #      and a tag on any other commit would publish bytes nobody measured.
 #      composer validate, the JavaScript suite (node --test), phpunit, phpcs and
 #      phpstan run against the tree being tagged and ANY non-zero exit refuses the
-#      push (M2MAP-546: a tag is a release, and no release is cut over a red gate).
+#      push (a tag is a release, and no release is cut over a red gate).
 #      Exit codes are read, never output.
 #
 # THE JAVASCRIPT GATE runs Test/Js/*.test.cjs, the widget's

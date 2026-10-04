@@ -32,7 +32,7 @@
  * 5. Synthesise a Factory/Extension class ONLY when composer cannot find a real
  *    file for it - never by name pattern alone.
  *
- * 6. M2MAP-682: under phpstan, refuse when ANY Factory/Extension the shipped code
+ * 6. Under phpstan, refuse when ANY Factory/Extension the shipped code
  *    imports is unresolved - Magento's own as well as ours. A sparse generated/code
  *    once let a Magento factory be synthesised with create() returning null;
  *    phpstan stopped checking everything downstream and exited 0. The unit suite
@@ -158,7 +158,7 @@ if ($unresolved !== [] && $underAnalyser) {
     fwrite(STDERR, sprintf(
         "\nREFUSING to analyse: %d imported class(es) cannot be resolved and would be SYNTHESISED as\n"
         . "empty stand-ins whose create() returns null - phpstan would stop checking everything they\n"
-        . "return and exit 0 over its own blind spot (M2MAP-682):\n  %s\n"
+        . "return and exit 0 over its own blind spot:\n  %s\n"
         . "Generate them on %s first:\n  php -d memory_limit=-1 bin/magento setup:di:compile\n\n",
         count($unresolved),
         implode("\n  ", array_keys($unresolved)),

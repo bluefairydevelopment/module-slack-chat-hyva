@@ -1,7 +1,7 @@
 /**
  * Copyright © 2026 Blue Fairy Development. All rights reserved.
  *
- * M2MAP-141 - the Hyvä Slack Live Chat widget, end to end, on a Hyvä store view.
+ * The Hyvä Slack Live Chat widget, end to end, on a Hyvä store view.
  *
  * Preconditions (operator, before the run):
  *   - BlueFairy_SlackChat + BlueFairy_SlackChatHyva enabled; the theme CSS rebuilt;

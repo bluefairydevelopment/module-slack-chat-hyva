@@ -2,7 +2,7 @@
 /**
  * Copyright © 2026 Blue Fairy Development. All rights reserved.
  *
- * Playwright config for the BlueFairy Slack Live Chat storefront specs (M2MAP-141).
+ * Playwright config for the BlueFairy Slack Live Chat storefront specs.
  * The Hyvä widget specs live beside this file, in the package (Test/ is export-ignored).
  *
  * BASE_URL IS REQUIRED and there is no default: a spec run against a host that

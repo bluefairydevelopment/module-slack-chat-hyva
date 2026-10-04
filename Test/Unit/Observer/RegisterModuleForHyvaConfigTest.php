@@ -18,7 +18,7 @@ use PHPUnit\Framework\TestCase;
  * The observer that makes Hyvä's Tailwind build scan this module.
  *
  * Ported from module-jira-hyva, where the observer had no test in either package
- * until one was written: M2MAP-359 measured what its absence costs on a running
+ * until one was written: the cost of its absence was measured on a running
  * store - 43 of 110 distinct classes emitting no CSS - and the cure was checked by
  * asserting the EVENT SUBSCRIPTION existed. That proves the observer is wired,
  * not that it does anything. Both halves are needed: a subscription to a method

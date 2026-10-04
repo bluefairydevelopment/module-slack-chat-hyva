@@ -13,7 +13,7 @@ use PHPUnit\Framework\TestCase;
 use SimpleXMLElement;
 
 /**
- * M2MAP-249. This package's layout must reach Hyvä store views ONLY. Hyvä mirrors
+ * This package's layout must reach Hyvä store views ONLY. Hyvä mirrors
  * every page handle with a hyva_ prefix when, and only when, the theme is a Hyvä
  * theme (Hyva\Theme\Observer\AddLayoutHandles); a plain default.xml would apply on
  * Luma too, serving an Alpine widget to a store with no Alpine and removing the
@@ -132,7 +132,7 @@ class HyvaDefaultLayoutTest extends TestCase
     }
 
     /**
-     * M2MAP-292: a removal of a name nothing declares is a no-op that reads like a
+     * A removal of a name nothing declares is a no-op that reads like a
      * decision. The Luma block is declared by the base package; check it really
      * declares that name.
      *
