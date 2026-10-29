@@ -3,7 +3,7 @@
     "description": "BlueFairy Slack Live Chat - Hyva storefront widget (Alpine.js, CSP-safe) for bluefairy/module-slack-chat.",
     "type": "magento2-module",
     "license": [
-        "proprietary"
+        "MIT"
     ],
     "require": {
         "php": "~8.3.0||~8.4.0||~8.5.0",
