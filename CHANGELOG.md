@@ -6,6 +6,7 @@ All notable changes to this package are documented in this file.
 
 First release: the Hyvä storefront widget for BlueFairy Slack Live Chat
 (`bluefairy/module-slack-chat`).
+Free and open source under the MIT licence; the base module keeps its own licence.
 
 ### The widget
 - A chat bubble and a non-modal chat panel, built as one Alpine component (`bfslcChat`) that works

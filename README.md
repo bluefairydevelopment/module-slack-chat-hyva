@@ -212,4 +212,4 @@ always inserted as text, never as HTML.
 
 ## License
 
-Proprietary. Copyright © 2026 Blue Fairy Development. All rights reserved. See `LICENSE`.
+MIT. Copyright (c) 2026 Blue Fairy Development LLC. See `LICENSE.txt`.
