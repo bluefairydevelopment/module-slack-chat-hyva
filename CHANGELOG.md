@@ -7,6 +7,9 @@ All notable changes to this package are documented in this file.
 First release: the Hyvä storefront widget for BlueFairy Slack Live Chat
 (`bluefairy/module-slack-chat`).
 
+### Review round 4 (work in progress, gates not yet run)
+- The widget polls with a 60-second overlap and merges messages by id.
+
 ### The widget
 - A chat bubble and a non-modal chat panel, built as one Alpine component (`bfslcChat`) that works
   under Hyvä's strict-CSP Alpine build and is styled with Tailwind utilities. It talks to the base
