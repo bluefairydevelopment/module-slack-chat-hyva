@@ -54,11 +54,32 @@
  * and with it the unread badge, starts only after that first open. A reply that
  * arrives on a page where the bubble was never opened is shown when it is opened.
  *
- * THE TRANSCRIPT IS READ FROM THE START. The first history load of a conversation
- * pages forward from id 0 with its own cursor, never from the newest id already
- * held: a message sent before the history arrived (after a failed resume) must
- * not hide everything said before it. Every message is placed in id order, so an
- * earlier reply that loads late still sits above the message that followed it.
+ * THE TRANSCRIPT IS READ FROM THE START. A history load pages forward from id 0
+ * with its own cursor, never from the newest id already held: a message sent
+ * before the history arrived (after a failed resume) must not hide everything said
+ * before it. It is read again when the visitor reopens the chat, and a held
+ * message whose text or file changed is redrawn from the new copy: an agent can
+ * edit or delete a reply in Slack (deleting is how an agent takes back something
+ * posted by mistake), and the visitor sees that when they come back. That full
+ * read happens at most once a minute per conversation (FULL_READ_EVERY_MS, counted
+ * from the last read that completed, rt.fullReadAt): a long transcript is many
+ * pages, and they count against the same per-conversation read limit as polling.
+ * Sooner, an opening only resumes the stream (or the poll) after the newest id
+ * held. The history counts as loaded (rt.historyToken) only once a load has read
+ * to the end; a load that failed is tried again at the next send or opening.
+ *
+ * EVERY MESSAGE IS PLACED IN ID ORDER, so an earlier reply that loads late still
+ * sits above the message that followed it. The visitor's own messages that are not
+ * yet confirmed (id 0) stay below every server message; once confirmed, a message
+ * moves to its id's place - a reply that arrived while it was being sent may have
+ * a lower id.
+ *
+ * POLLING RE-READS THE LAST MINUTE. Ids are handed out when a message is stored and
+ * a message becomes readable only when that write completes, so a message can
+ * appear after one with a higher id. A poll therefore starts from the newest id as
+ * it stood 60 seconds ago (more than the database's 50-second lock wait; until a
+ * minute has passed, from the newest id of the transcript as first loaded) and a
+ * message already held is merged by id, never shown twice.
  *
  * A DOWNLOAD USES THE TOKEN OF THE CONVERSATION THE MESSAGE CAME FROM (each
  * message keeps it), not the current one, so a file in a conversation the visitor
@@ -69,10 +90,11 @@
  * closes it; the open, visible panel then polls every 60 seconds instead (an agent
  * may still answer), and the closed panel keeps its 30-second unread poll. The
  * stream is tried again when the visitor sends, reopens the panel, shows the tab
- * or a poll brings a new message. A reconnect the server answers with idle again -
- * 200 + `event: idle`, or 204 from an older server (rt.wasIdle remembers that the
- * attempt followed an idle) - goes back to the 60-second poll, not the 3-second
- * fallback. `event: superseded` (another tab took this conversation's one stream
+ * or a poll brings a new message. A reconnect the server answers with idle again
+ * (200 + `event: idle`) goes back to the 60-second poll; one it refuses before the
+ * stream opens (a 503 when the store's stream cap is full) is treated like any
+ * refused stream: the 3-second poll, and the stream again in 60 seconds.
+ * `event: superseded` (another tab took this conversation's one stream
  * slot) closes it; this tab then polls every 30 seconds rather than take the slot
  * back and start a tug of war - until the visitor sends from it, which makes it
  * the tab being talked in. `event: reconnecting` (the server's
@@ -155,6 +177,8 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
     var SETTLE_WINDOW_MS = 60 * 60000;
     var HISTORY_PAGE = 200;
     var HISTORY_MAX_PAGES = 10;
+    var OVERLAP_MS = 60000;
+    var FULL_READ_EVERY_MS = 60000;
 
     var ROW_CLASS = {
         outbound: 'flex flex-col items-end',
@@ -363,6 +387,10 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             chain: Promise.resolve(),
             starting: null,
             historyToken: '',
+            loading: null,
+            fullReadAt: 0,
+            lagFloor: 0,
+            lagMarks: [],
             es: null,
             pollTimer: null,
             pollMs: 0,
@@ -370,7 +398,6 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             pollCount: 0,
             retryTimer: null,
             streamEnd: '',
-            wasIdle: false,
             unsettled: {},
             settleTimer: null,
             blobUrls: []
@@ -378,6 +405,20 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
 
         function t(key) {
             return text(rt.i18n[key]);
+        }
+
+        function raiseLastId(id) {
+            if (id > rt.lastId) {
+                rt.lastId = id;
+                rt.lagMarks.push([Date.now(), id]);
+            }
+        }
+
+        function pollCursor(now) {
+            while (rt.lagMarks.length > 0 && rt.lagMarks[0][0] <= now - OVERLAP_MS) {
+                rt.lagFloor = Math.max(rt.lagFloor, rt.lagMarks.shift()[1]);
+            }
+            return rt.lagFloor;
         }
 
         return {
@@ -497,6 +538,9 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     this.boot();
                 } else {
                     this.syncRealtime();
+                    if (this.hasSession) {
+                        this.catchUp(this.token);
+                    }
                 }
                 var self = this;
                 this.$nextTick(function () {
@@ -553,10 +597,6 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     }
                     if (res.ok && res.data && res.data.status === 'active') {
                         self.adoptSession(res.data);
-                        if (rt.historyToken === token) {
-                            self.syncRealtime();
-                            return null;
-                        }
                         return self.catchUp(token);
                     }
                     if (res.ok || isGone(res)) {
@@ -572,14 +612,42 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
 
             catchUp(token) {
                 var self = this;
-                rt.historyToken = token;
-                this.historyLoading = true;
-                return this.loadHistory(token).then(function () {
-                    self.historyLoading = false;
+                if (rt.loading !== null && rt.loading.token === token) {
+                    return rt.loading.promise;
+                }
+                var first = rt.historyToken !== token;
+                var now = Date.now();
+                if (!first && now - rt.fullReadAt < FULL_READ_EVERY_MS) {
+                    this.syncRealtime();
+                    return Promise.resolve();
+                }
+                if (first) {
+                    this.historyLoading = true;
+                }
+                var entry = { token: token, promise: null };
+                function done(complete) {
+                    if (rt.loading === entry) {
+                        rt.loading = null;
+                    }
+                    if (first) {
+                        self.historyLoading = false;
+                    }
+                    if (!complete || self.token !== token) {
+                        return;
+                    }
+                    if (first) {
+                        rt.lagFloor = rt.lastId;
+                        rt.lagMarks = [];
+                    }
+                    rt.historyToken = token;
+                    rt.fullReadAt = now;
                     self.syncRealtime();
-                }, function () {
-                    self.historyLoading = false;
+                }
+                entry.promise = this.loadHistory(token).then(done, function () {
+                    done(false);
                 });
+                rt.loading = entry;
+                return entry.promise;
             },
 
             fetchAvailability() {
@@ -606,10 +674,12 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 this.token = '';
                 this.sessionStatus = '';
                 rt.historyToken = '';
+                rt.fullReadAt = 0;
+                rt.lagFloor = 0;
+                rt.lagMarks = [];
                 rt.pollCount = 0;
                 rt.unsettled = {};
                 rt.streamEnd = '';
-                rt.wasIdle = false;
             },
 
             accepted(token) {
@@ -619,7 +689,6 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 this.booted = true;
                 this.sessionStatus = 'active';
                 rt.streamEnd = '';
-                rt.wasIdle = false;
                 if (rt.historyToken !== token) {
                     this.catchUp(token);
                 } else {
@@ -673,13 +742,13 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                         limit: HISTORY_PAGE
                     }).then(function (res) {
                         if (self.token !== token) {
-                            return null;
+                            return false;
                         }
                         if (!res.ok || !res.data) {
                             if (isGone(res)) {
                                 self.conversationEnded();
                             }
-                            return null;
+                            return false;
                         }
                         var items = res.data.items || [];
                         items.forEach(function (item) {
@@ -689,7 +758,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                         if (items.length === HISTORY_PAGE && page < HISTORY_MAX_PAGES) {
                             return next();
                         }
-                        return null;
+                        return true;
                     });
                 }
                 return next();
@@ -878,9 +947,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 if (id <= 0) {
                     return;
                 }
-                if (id > rt.lastId) {
-                    rt.lastId = id;
-                }
+                raiseLastId(id);
                 var knownKey = rt.seen[id];
                 if (knownKey) {
                     var known = this.byKey(knownKey);
@@ -894,6 +961,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     if (pending) {
                         this.apply(pending, raw, token);
                         rt.seen[id] = pending.key;
+                        this.place(pending.key);
                         return;
                     }
                 }
@@ -928,12 +996,23 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
 
             insertInOrder(msg) {
                 for (var i = 0; i < this.messages.length; i++) {
-                    if (this.messages[i].id > msg.id) {
+                    var other = this.messages[i];
+                    if (other.id > msg.id || (other.id === 0 && other.key.charAt(0) === 'l')) {
                         this.messages.splice(i, 0, msg);
                         return;
                     }
                 }
                 this.messages.push(msg);
+            },
+
+            place(key) {
+                for (var i = 0; i < this.messages.length; i++) {
+                    if (this.messages[i].key === key) {
+                        var msg = this.messages.splice(i, 1)[0];
+                        this.insertInOrder(msg);
+                        return;
+                    }
+                }
             },
 
             pendingMatch(raw) {
@@ -967,9 +1046,8 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 this.apply(msg, data || {}, token);
                 if (id > 0) {
                     rt.seen[id] = key;
-                    if (id > rt.lastId) {
-                        rt.lastId = id;
-                    }
+                    raiseLastId(id);
+                    this.place(key);
                 }
             },
 
@@ -1287,7 +1365,6 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 source.addEventListener('open', function () {
                     if (current()) {
                         openedAt = Date.now();
-                        rt.wasIdle = false;
                     }
                 });
                 source.addEventListener('message', function (event) {
@@ -1335,11 +1412,6 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                         return;
                     }
                     self.stopStream();
-                    if (openedAt === 0 && rt.wasIdle) {
-                        rt.streamEnd = 'idle';
-                        self.syncRealtime();
-                        return;
-                    }
                     self.startPolling(POLL_MS);
                     self.scheduleStreamRetry();
                 };
@@ -1388,7 +1460,7 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                 rt.pollBusy = true;
                 request('POST', rt.restRoot + 'messages', {
                     sessionToken: token,
-                    afterId: rt.lastId,
+                    afterId: pollCursor(Date.now()),
                     limit: 100
                 }).then(function (res) {
                     if (self.token !== token) {
@@ -1405,7 +1477,6 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
                     });
                     if (rt.streamEnd === 'idle' && rt.lastId > before && self.isOpen && !document.hidden) {
                         rt.streamEnd = '';
-                        rt.wasIdle = false;
                         self.stopPolling();
                         self.syncRealtime();
                     }
@@ -1454,7 +1525,6 @@ $nonce = $viewModel instanceof WidgetViewModel ? $viewModel->getCspNonce() : '';
             wake() {
                 if (rt.streamEnd === 'idle') {
                     rt.streamEnd = '';
-                    rt.wasIdle = true;
                 }
             },
 

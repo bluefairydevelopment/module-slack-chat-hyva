@@ -29,7 +29,7 @@
     <policies>
         <policy id="script-src">
             <values>
-                <value id="bfslc-hyva-chat-js" type="hash" algorithm="sha256">PI5PylDNH8RBsQcv/KcVtRAjgoA+liwxRf3po6DSpVc=</value>
+                <value id="bfslc-hyva-chat-js" type="hash" algorithm="sha256">Nc2y9bP9sg49sWxs0qmy2RuH7xgqJEp6bag2HUtchWU=</value>
             </values>
         </policy>
     </policies>

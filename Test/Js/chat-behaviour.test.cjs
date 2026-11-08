@@ -236,6 +236,184 @@ test('a message received out of order is placed by id', async () => {
     assert.deepEqual(h.c.messages.map((m) => m.body), ['three', 'six', 'nine', 'eleven']);
 });
 
+test('a confirmed message moves to its id\'s place: a reply that arrived while it was being sent stays in id order', async () => {
+    const held = {};
+    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? items(inbound(5, 'hello'))
+        : p === 'message' ? new Promise((r) => { held[body.body] = r; }) : [500, null]), { token: TOKEN });
+    h.c.open();
+    await settle();
+    const frame = (raw) => h.sources[0].listeners.message({ data: JSON.stringify(raw) });
+    const order = () => h.c.messages.map((m) => [m.id, m.body]);
+
+    await sendText(h, 'hi');
+    assert.equal(typeof held.hi, 'function', 'CONTROL: the send is held');
+    frame(inbound(11, 'reply'));
+    assert.deepEqual(order(), [[5, 'hello'], [11, 'reply'], [0, 'hi']], 'a server message was placed below a message still being sent');
+    held.hi([200, out(12, 'hi')]);
+    await settle();
+    assert.deepEqual(order(), [[5, 'hello'], [11, 'reply'], [12, 'hi']]);
+
+    await sendText(h, 'again');
+    frame(inbound(20, 'later reply'));
+    held.again([200, out(19, 'again')]);
+    await settle();
+    assert.deepEqual(order().slice(3), [[19, 'again'], [20, 'later reply']], 'a confirmed message kept its local place instead of its id\'s');
+
+    await sendText(h, 'echo');
+    frame(inbound(31, 'quick reply'));
+    frame(out(30, 'echo'));
+    assert.deepEqual(order().slice(5), [[30, 'echo'], [31, 'quick reply']], 'a message the stream confirmed kept its local place');
+    held.echo([200, out(30, 'echo')]);
+    await settle();
+    assert.deepEqual(order().slice(5), [[30, 'echo'], [31, 'quick reply']]);
+    assert.equal(h.c.messages.length, 7, 'a message confirmed twice is shown twice');
+});
+
+/** Runs fn with Date.now under the test's control; clock.now moves it. */
+async function withClock(fn) {
+    const realNow = Date.now;
+    const clock = { now: realNow() };
+    Date.now = () => clock.now;
+    try {
+        await fn(clock);
+    } finally {
+        Date.now = realNow;
+    }
+}
+
+test('reopening the chat reads the transcript again from the start; an agent\'s edit or deletion in Slack shows', () => withClock(async (clock) => {
+    const file = { attachment_url: 'https://shop.example/bluefairy_slc/file/download/id/4/', attachment_name: 'card.pdf' };
+    let transcript = [out(3, 'my order'), Object.assign(inbound(4, 'Your card is 4111 1111'), file), inbound(5, 'typo hre')];
+    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN)
+        : p === 'messages' ? items(...transcript.filter((m) => m.id > body.afterId)) : [500, null]), { token: TOKEN });
+    const byId = (id) => h.c.messages.find((m) => m.id === id);
+    h.c.open();
+    await settle();
+    assert.equal(byId(4).body, 'Your card is 4111 1111');
+    assert.equal(byId(4).canDownload, true, 'CONTROL: the file is offered');
+    h.c.close();
+    await settle();
+    transcript = [out(3, 'my order'), inbound(4, '(This message was removed.)'), inbound(5, 'typo here')];
+    clock.now += 60000;
+    h.c.open();
+    await settle();
+    assert.equal(h.calls.filter((x) => x.path === 'messages').pop().body.afterId, 0, 'the reopen did not read the transcript from the start');
+    assert.deepEqual(h.c.messages.map((m) => m.id), [3, 4, 5]);
+    assert.equal(byId(4).body, '(This message was removed.)', 'a reply the agent deleted still shows on reopening');
+    assert.equal(byId(4).hasAttachment, false, 'the deleted reply still offers its file');
+    assert.equal(byId(4).canDownload, false);
+    assert.equal(byId(5).body, 'typo here', 'an edited reply shows its old text on reopening');
+    assert.equal(h.c.unreadCount, 0);
+    assert.equal(h.sources.length, 2, 'CONTROL: the reopen connected the stream');
+}));
+
+test('reopening reads the whole transcript again at most once a minute; sooner, the stream resumes after the newest id', () => withClock(async (clock) => {
+    let transcript = [out(3, 'my order'), inbound(4, 'typo hre')];
+    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN)
+        : p === 'messages' ? items(...transcript.filter((m) => m.id > body.afterId)) : [500, null]), { token: TOKEN });
+    const fromStart = () => h.calls.filter((x) => x.path === 'messages' && x.body.afterId === 0).length;
+    h.c.open();
+    await settle();
+    assert.equal(fromStart(), 1, 'CONTROL: the first opening reads from the start');
+    transcript = [out(3, 'my order'), inbound(4, 'typo here')];
+    h.c.close();
+    await settle();
+    clock.now += 10000;
+    h.c.open();
+    await settle();
+    assert.equal(fromStart(), 1, 'a reopen 10 s after a full read read the whole transcript again');
+    assert.equal(h.sources.length, 2, 'the reopen within the minute did not resume the stream');
+    assert.match(h.sources[1].url, /&after=4$/);
+    assert.equal(h.c.messages[1].body, 'typo hre');
+    h.c.close();
+    await settle();
+    clock.now += 51000;
+    h.c.open();
+    await settle();
+    assert.equal(fromStart(), 2, 'a reopen 61 s after the full read did not read from the start');
+    assert.equal(h.c.messages[1].body, 'typo here');
+}));
+
+test('a full read that failed does not count: the next opening reads from the start again', () => withClock(async (clock) => {
+    let answer = items(inbound(3, 'x'));
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? answer : [500, null]), { token: TOKEN });
+    const fromStart = () => h.calls.filter((x) => x.path === 'messages' && x.body.afterId === 0).length;
+    h.c.open();
+    await settle();
+    h.c.close();
+    await settle();
+    clock.now += 61000;
+    answer = [503, { message: 'down' }];
+    h.c.open();
+    await settle();
+    assert.equal(fromStart(), 2, 'CONTROL: a reopen after a minute reads from the start');
+    h.c.close();
+    await settle();
+    clock.now += 10000;
+    answer = items(inbound(3, 'x'));
+    h.c.open();
+    await settle();
+    assert.equal(fromStart(), 3, 'a failed read was counted as the minute\'s full read');
+}));
+
+test('a history load that failed is not taken as loaded: the next send loads it again', async () => {
+    let history = [503, { message: 'down' }];
+    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? history
+        : p === 'message' ? [200, out(12, body.body)] : [500, null]), { token: TOKEN });
+    h.c.open();
+    await settle();
+    assert.deepEqual(h.c.messages, [], 'CONTROL: the history load failed');
+    assert.equal(h.c.logBusy, 'false');
+    history = items(inbound(5, 'earlier reply'), out(12, 'hi'));
+    await sendText(h, 'hi');
+    assert.deepEqual(h.calls.filter((x) => x.path === 'messages').map((x) => x.body.afterId), [0, 0], 'a failed history load was never tried again');
+    assert.deepEqual(h.c.messages.map((m) => m.body), ['earlier reply', 'hi']);
+    assert.equal(h.sources.length, 1, 'the stream did not connect once the history loaded');
+});
+
+test('a history load that failed is loaded again when the chat is reopened', async () => {
+    let history = [0, null];
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? history : [500, null]), { token: TOKEN });
+    h.c.open();
+    await settle();
+    assert.deepEqual(h.c.messages, [], 'CONTROL: the history load failed');
+    h.c.close();
+    await settle();
+    history = items(inbound(5, 'earlier reply'));
+    h.c.open();
+    await settle();
+    assert.deepEqual(h.c.messages.map((m) => m.body), ['earlier reply']);
+});
+
+test('polling re-reads the last minute, so a message that becomes readable late below the newest id still shows', async () => {
+    const readable = [inbound(5, 'x')];
+    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN)
+        : p === 'messages' ? items(...readable.filter((m) => m.id > body.afterId).sort((a, b) => a.id - b.id)) : [500, null]),
+    { token: TOKEN, noEventSource: true });
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => now;
+    try {
+        h.c.open();
+        await settle();
+        assert.deepEqual(h.intervalMs(), [3000], 'CONTROL: the open panel polls');
+        readable.push(inbound(9, 'reply'));
+        now += 3000;
+        await h.tick();
+        assert.deepEqual(h.c.messages.map((m) => m.id), [5, 9]);
+        readable.push(out(7, 'sent from another tab a moment earlier'));
+        now += 3000;
+        await h.tick();
+        assert.deepEqual(h.c.messages.map((m) => m.id), [5, 7, 9], 'a message that became readable late, below the newest id, was skipped for good');
+        now += 60000;
+        await h.tick();
+        assert.deepEqual(h.calls.filter((x) => x.path === 'messages').map((x) => x.body.afterId), [0, 5, 5, 5, 9]);
+        assert.deepEqual(h.c.messages.map((m) => m.id), [5, 7, 9], 'a message read twice is shown twice');
+    } finally {
+        Date.now = realNow;
+    }
+});
+
 /* ---------------------------------------------------------------- End chat */
 
 test('End chat that the server refuses keeps the conversation and says so', async () => {
@@ -738,7 +916,7 @@ test('an ended conversation forgets only its own token, not one another tab stor
     assert.equal('bfslc_token_default' in k.store, false, 'CONTROL: its own token is forgotten');
 });
 
-test('a reconnect after idle that an older server refuses with 204 stays on the 60 s idle poll', async () => {
+test('a reconnect after idle that the server refuses before it opens polls every 3 s and tries the stream again', async () => {
     const h = setup((p) => (p === 'session/status' ? active(TOKEN) : items()), { token: TOKEN });
     h.c.open();
     await settle();
@@ -752,17 +930,17 @@ test('a reconnect after idle that an older server refuses with 204 stays on the 
     h.sources[1].readyState = 2;
     h.sources[1].onerror();
     await settle();
-    assert.deepEqual(h.intervalMs(), [60000], 'a 204 after idle fell back to 3 s polling');
-    assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [], 'a 204 after idle schedules a stream retry');
+    assert.deepEqual(h.intervalMs(), [3000], 'a refused reconnect after idle was taken for idle (60 s poll, no stream retry)');
+    assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [60000], 'a refused reconnect after idle never tries the stream again');
+    await h.fireTimeouts(60000);
+    assert.equal(h.sources.length, 3, 'the stream retry did not open a stream');
+    assert.deepEqual(h.intervalMs(), [], 'the 3 s poll outlived the stream it stood in for');
 
-    await h.setHidden(true);
-    await h.setHidden(false);
-    assert.equal(h.sources.length, 3);
     h.sources[2].listeners.open({});
     h.sources[2].readyState = 2;
     h.sources[2].onerror();
     await settle();
-    assert.deepEqual(h.intervalMs(), [3000], 'CONTROL: a stream that opened and then failed is the 3 s fallback');
+    assert.deepEqual(h.intervalMs(), [3000], 'CONTROL: a stream that opened and then failed is the 3 s fallback too');
     assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [60000]);
 });
 
