@@ -10,7 +10,5 @@
  * Same glob as module.css; TailwindScansThisPackagesTemplatesTest checks both.
  */
 module.exports = {
-    content: [
-        '../templates/**/*.phtml'
-    ]
+    content: ['../templates/**/*.phtml']
 };

@@ -23,7 +23,7 @@ const SEL = {
     log: '#bfslc-panel [role="log"]',
     item: '#bfslc-panel [data-bfslc-message]',
     banner: '#bfslc-panel [data-bfslc-banner]',
-    config: '[data-bfslc-config]',
+    config: '[data-bfslc-config]'
 };
 
 const CHAT_REQUEST = /\/rest\/[^/]+\/V1\/bluefairy-slack-chat\/|\/bluefairy_slc\/stream\//;
@@ -92,13 +92,18 @@ function slackThreadFor(token) {
         return { reason: 'DB_TABLE_PREFIX is not a plain identifier' };
     }
     const args = [
-        '-h', process.env.DB_HOST || '127.0.0.1',
-        '-P', process.env.DB_PORT || '3306',
-        '-u', process.env.DB_USER,
-        '-N', '-B',
+        '-h',
+        process.env.DB_HOST || '127.0.0.1',
+        '-P',
+        process.env.DB_PORT || '3306',
+        '-u',
+        process.env.DB_USER,
+        '-N',
+        '-B',
         process.env.DB_NAME,
         // The token was checked against /^[a-f0-9]{64}$/ above, so it cannot break out of the literal.
-        '-e', `SELECT channel_id, IFNULL(slack_thread_ts, '') FROM ${table} WHERE session_token = '${token}' LIMIT 1`,
+        '-e',
+        `SELECT channel_id, IFNULL(slack_thread_ts, '') FROM ${table} WHERE session_token = '${token}' LIMIT 1`
     ];
     const env = { ...process.env };
     if (process.env.DB_PASSWORD) {
@@ -113,9 +118,13 @@ function slackThreadFor(token) {
     const [channel, threadTs] = out.split('\t');
     if (!channel || !threadTs) {
         return {
-            reason: 'the conversation has no Slack thread (channel "' + (channel || '') + '", thread_ts "'
-                + (threadTs || '') + '") - the rig posts by webhook or Slack refused the first message, '
-                + 'so there is no thread for an agent to reply in',
+            reason:
+                'the conversation has no Slack thread (channel "' +
+                (channel || '') +
+                '", thread_ts "' +
+                (threadTs || '') +
+                '") - the rig posts by webhook or Slack refused the first message, ' +
+                'so there is no thread for an agent to reply in'
         };
     }
     return { channel, threadTs };
@@ -139,17 +148,22 @@ async function postSignedAgentReply(request, { channel, threadTs, text }) {
             text,
             ts: now + '.' + String(Math.floor(Math.random() * 1e6)).padStart(6, '0'),
             thread_ts: threadTs,
-            user_profile: { display_name: 'E2E Agent', real_name: 'E2E Agent' },
-        },
+            user_profile: { display_name: 'E2E Agent', real_name: 'E2E Agent' }
+        }
     });
-    const signature = 'v0=' + crypto.createHmac('sha256', secret).update('v0:' + now + ':' + body).digest('hex');
+    const signature =
+        'v0=' +
+        crypto
+            .createHmac('sha256', secret)
+            .update('v0:' + now + ':' + body)
+            .digest('hex');
     return request.post('/bluefairy_slc/slack/events', {
         data: body,
         headers: {
             'Content-Type': 'application/json',
             'X-Slack-Request-Timestamp': String(now),
-            'X-Slack-Signature': signature,
-        },
+            'X-Slack-Signature': signature
+        }
     });
 }
 
@@ -198,7 +212,7 @@ function generatePng(bytes) {
         Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
         chunk('IHDR', ihdr),
         chunk('IDAT', zlib.deflateSync(raw, { level: 1 })),
-        chunk('IEND', Buffer.alloc(0)),
+        chunk('IEND', Buffer.alloc(0))
     ]);
 }
 
@@ -218,7 +232,12 @@ function whitelistedScriptHash() {
 /** The script-src directive of the enforced (or, failing that, report-only) policy, or ''. */
 function scriptSrc(headers) {
     const policy = headers['content-security-policy'] || headers['content-security-policy-report-only'] || '';
-    return policy.split(';').map((p) => p.trim()).find((p) => p.startsWith('script-src ')) || '';
+    return (
+        policy
+            .split(';')
+            .map((p) => p.trim())
+            .find((p) => p.startsWith('script-src ')) || ''
+    );
 }
 
 module.exports = {
@@ -235,5 +254,5 @@ module.exports = {
     generatePng,
     sha256,
     whitelistedScriptHash,
-    scriptSrc,
+    scriptSrc
 };

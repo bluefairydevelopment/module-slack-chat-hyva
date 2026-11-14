@@ -33,8 +33,8 @@ const { defineConfig, devices } = require('@playwright/test');
 const baseURL = process.env.BASE_URL;
 if (!baseURL) {
     throw new Error(
-        'BASE_URL is not set. Point it at a TEST Magento store view running the Slack Live Chat widget, e.g.\n'
-        + '  BASE_URL=https://hyvatest.example npx playwright test -c ~/Sites/Modules/module-slack-chat-hyva/Test/Playwright/playwright.config.js\n'
+        'BASE_URL is not set. Point it at a TEST Magento store view running the Slack Live Chat widget, e.g.\n' +
+            '  BASE_URL=https://hyvatest.example npx playwright test -c ~/Sites/Modules/module-slack-chat-hyva/Test/Playwright/playwright.config.js\n'
     );
 }
 
@@ -54,7 +54,7 @@ module.exports = defineConfig({
         ignoreHTTPSErrors: true,
         screenshot: 'only-on-failure',
         trace: 'retain-on-failure',
-        acceptDownloads: true,
+        acceptDownloads: true
     },
-    projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+    projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }]
 });

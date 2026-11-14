@@ -21,7 +21,9 @@ const { test, expect } = require('@playwright/test');
 const h = require('./helpers');
 
 test.describe('Hyvä Slack Live Chat widget', () => {
-    test('is lazy: no chat request until the bubble is opened, then a message is sent and accepted', async ({ page }) => {
+    test('is lazy: no chat request until the bubble is opened, then a message is sent and accepted', async ({
+        page
+    }) => {
         const chat = h.recordChatRequests(page);
         await page.goto(h.pagePath());
         const config = await h.bootConfig(page);
@@ -55,15 +57,21 @@ test.describe('Hyvä Slack Live Chat widget', () => {
         await h.openChat(page);
         await h.sendMessage(page, 'e2e needs a reply ' + Date.now());
 
-        await expect.poll(() => chat.some((r) => r.includes('/bluefairy_slc/stream/index')), {
-            message: 'the reply stream was never opened for the new conversation',
-        }).toBe(true);
+        await expect
+            .poll(() => chat.some((r) => r.includes('/bluefairy_slc/stream/index')), {
+                message: 'the reply stream was never opened for the new conversation'
+            })
+            .toBe(true);
 
         const thread = h.slackThreadFor(await h.storedToken(page, config.storeCode));
         test.skip(Boolean(thread.reason), thread.reason || '');
 
         const reply = 'e2e agent reply <b>not bold</b> ' + Date.now();
-        const res = await h.postSignedAgentReply(request, { channel: thread.channel, threadTs: thread.threadTs, text: reply });
+        const res = await h.postSignedAgentReply(request, {
+            channel: thread.channel,
+            threadTs: thread.threadTs,
+            text: reply
+        });
         expect(res.status(), 'the store refused the signed event: ' + (await res.text())).toBe(200);
 
         const row = page.locator(h.SEL.item).filter({ hasText: reply });
@@ -79,7 +87,10 @@ test.describe('Hyvä Slack Live Chat widget', () => {
         const png = h.generatePng(3 * 1024 * 1024);
         test.skip(!config.uploadsEnabled, 'file uploads are disabled for this store view');
         test.skip(!config.allowedMimeTypes.includes('image/png'), 'image/png is not an allowed upload type here');
-        test.skip(config.maxUploadBytes < png.length, `upload limit ${config.maxUploadBytes} is below the ${png.length}-byte specimen`);
+        test.skip(
+            config.maxUploadBytes < png.length,
+            `upload limit ${config.maxUploadBytes} is below the ${png.length}-byte specimen`
+        );
 
         await h.openChat(page);
         const uploaded = page.waitForResponse((r) => /\/V1\/bluefairy-slack-chat\/upload$/.test(r.url()));
@@ -139,7 +150,10 @@ test.describe('Hyvä Slack Live Chat widget', () => {
      */
     test('shows the Away banner when the store is set to Away', async ({ page }) => {
         const expected = process.env.BFSLC_EXPECT_AWAY_MESSAGE;
-        test.skip(!expected, 'BFSLC_EXPECT_AWAY_MESSAGE is not set - the operator has not put the store in Away (see this test\'s comment)');
+        test.skip(
+            !expected,
+            "BFSLC_EXPECT_AWAY_MESSAGE is not set - the operator has not put the store in Away (see this test's comment)"
+        );
 
         await page.goto(h.pagePath());
         const availability = page.waitForResponse((r) => /\/V1\/bluefairy-slack-chat\/availability\//.test(r.url()));
@@ -155,25 +169,40 @@ test.describe('Hyvä Slack Live Chat widget', () => {
      * sha256 (etc/csp_whitelist.xml; Hyvä's registerInlineScript sends the same hash
      * on cached pages). Any other sha256 in script-src proves nothing about it.
      */
-    test('the inline component script carries a CSP nonce and a strict policy admits it by name', async ({ request }) => {
+    test('the inline component script carries a CSP nonce and a strict policy admits it by name', async ({
+        request
+    }) => {
         const response = await request.get(h.pagePath());
         expect(response.status()).toBe(200);
         const html = await response.text();
 
-        const match = html.match(/<script nonce="([^"]*)">(\s*\(function \(\) \{\s*'use strict';[\s\S]*?Alpine\.data\('bfslcChat'[\s\S]*?)<\/script>/);
-        expect(match, 'the widget\'s inline script is not on the page').not.toBeNull();
+        const match = html.match(
+            /<script nonce="([^"]*)">(\s*\(function \(\) \{\s*'use strict';[\s\S]*?Alpine\.data\('bfslcChat'[\s\S]*?)<\/script>/
+        );
+        expect(match, "the widget's inline script is not on the page").not.toBeNull();
         expect(match[1], 'the inline script has an empty nonce').toMatch(/^[A-Za-z0-9+/=]{16,}$/);
 
         const pinned = h.whitelistedScriptHash();
-        expect(h.sha256(match[2]), 'the served script body is not the one whose hash etc/csp_whitelist.xml pins').toBe(pinned);
+        expect(h.sha256(match[2]), 'the served script body is not the one whose hash etc/csp_whitelist.xml pins').toBe(
+            pinned
+        );
 
         const scriptSrc = h.scriptSrc(response.headers());
-        test.skip(scriptSrc === '', 'the response sends no script-src (Magento_Csp off or replaced) - nothing to check the script against');
-        test.skip(scriptSrc.includes("'unsafe-inline'"), "script-src allows 'unsafe-inline', so Magento sends no nonces or hashes and the strict-mode admission cannot be shown on this store");
+        test.skip(
+            scriptSrc === '',
+            'the response sends no script-src (Magento_Csp off or replaced) - nothing to check the script against'
+        );
+        test.skip(
+            scriptSrc.includes("'unsafe-inline'"),
+            "script-src allows 'unsafe-inline', so Magento sends no nonces or hashes and the strict-mode admission cannot be shown on this store"
+        );
 
         const byNonce = scriptSrc.includes("'nonce-" + match[1] + "'");
         const byHash = scriptSrc.includes("'sha256-" + pinned + "'");
-        expect(byNonce || byHash, "script-src names neither this script's nonce nor its pinned sha256 (" + pinned + '): ' + scriptSrc).toBe(true);
+        expect(
+            byNonce || byHash,
+            "script-src names neither this script's nonce nor its pinned sha256 (" + pinned + '): ' + scriptSrc
+        ).toBe(true);
     });
 
     /**
@@ -194,7 +223,10 @@ test.describe('Hyvä Slack Live Chat widget', () => {
         const scriptSrc = h.scriptSrc(response.headers());
         const cspAlpine = /<script[^>]+src="[^"]*\/alpine3-csp(\.min)?\.js"/.test(html);
         const noEval = scriptSrc !== '' && !scriptSrc.includes("'unsafe-eval'");
-        test.skip(!cspAlpine && !noEval, "this store serves the standard Alpine build and its script-src allows 'unsafe-eval' (or sends none) - the CSP build is not in use, so this run cannot show the component works under it");
+        test.skip(
+            !cspAlpine && !noEval,
+            "this store serves the standard Alpine build and its script-src allows 'unsafe-eval' (or sends none) - the CSP build is not in use, so this run cannot show the component works under it"
+        );
 
         await h.openChat(page);
         // The panel opening is the component running: x-show="isOpen" only flips if
