@@ -11,6 +11,6 @@
  */
 module.exports = {
     content: [
-        '../templates/**/*.phtml',
-    ],
+        '../templates/**/*.phtml'
+    ]
 };
