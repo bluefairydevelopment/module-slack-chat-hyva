@@ -54,3 +54,5 @@ Free and open source under the MIT licence; the base module keeps its own licenc
 - Tailwind registration: `view/frontend/tailwind/module.css` with an `@source` glob (Tailwind 4
   themes) and `tailwind.config.js` (Tailwind 3 themes), registered through the
   `hyva_config_generate_before` observer. The theme's CSS must be rebuilt after install.
+- The Tailwind 3 module config (`view/frontend/tailwind/tailwind.config.js`) passes the Magento
+  ESLint coding standard (no trailing commas); the config it exports is unchanged.
