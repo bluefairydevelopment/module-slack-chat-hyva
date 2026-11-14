@@ -55,4 +55,5 @@ Free and open source under the MIT licence; the base module keeps its own licenc
   themes) and `tailwind.config.js` (Tailwind 3 themes), registered through the
   `hyva_config_generate_before` observer. The theme's CSS must be rebuilt after install.
 - The Tailwind 3 module config (`view/frontend/tailwind/tailwind.config.js`) passes the Magento
-  ESLint coding standard (no trailing commas); the config it exports is unchanged.
+  ESLint coding standard (no trailing commas) and the estate Prettier format (`.prettierrc`); the
+  config it exports is unchanged.
