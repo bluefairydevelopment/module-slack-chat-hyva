@@ -25,8 +25,8 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const TEMPLATE = process.env.BFSLC_CHAT_JS
-    || path.join(__dirname, '..', '..', 'view', 'frontend', 'templates', 'chat-js.phtml');
+const TEMPLATE =
+    process.env.BFSLC_CHAT_JS || path.join(__dirname, '..', '..', 'view', 'frontend', 'templates', 'chat-js.phtml');
 
 /** The script body as served: everything between the opening tag and </script>. */
 function scriptBody() {
@@ -42,16 +42,32 @@ const REST = 'https://shop.example/rest/default/V1/bluefairy-slack-chat/';
 const TOKEN = 'a'.repeat(64);
 const TOKEN2 = 'b'.repeat(64);
 const I18N = {
-    open: 'Open chat', you: 'You', agent: 'Support', system: 'Notice', sending: 'Sending...',
+    open: 'Open chat',
+    you: 'You',
+    agent: 'Support',
+    system: 'Notice',
+    sending: 'Sending...',
     notSent: 'Not sent',
-    deliveryPending: 'Sending to our team…', retry: 'Retry', download: 'Download',
-    ended: 'This conversation has ended.', rateLimited: 'Too fast', unavailable: 'Unavailable',
-    tooLarge: 'Too large', typeNotAllowed: 'Type not allowed', uploadsOff: 'Uploads off',
-    fileEmpty: 'The file is empty.', unread: '%1 unread', genericError: 'Oops', networkError: 'Offline?',
+    deliveryPending: 'Sending to our team…',
+    retry: 'Retry',
+    download: 'Download',
+    ended: 'This conversation has ended.',
+    rateLimited: 'Too fast',
+    unavailable: 'Unavailable',
+    tooLarge: 'Too large',
+    typeNotAllowed: 'Type not allowed',
+    uploadsOff: 'Uploads off',
+    fileEmpty: 'The file is empty.',
+    unread: '%1 unread',
+    genericError: 'Oops',
+    networkError: 'Offline?',
     newConversation: 'Your previous conversation had ended, so this message started a new one.',
-    notDeliveredRetrying: 'Not delivered yet. We will keep trying for about 48 minutes.', notDelivered: 'Not delivered.',
-    uploadLimit: 'Upload limit reached', uploadQuota: 'Upload quota reached', storageFull: 'Storage full',
-    uploadBusy: 'Another file is still uploading. Try again in a moment.',
+    notDeliveredRetrying: 'Not delivered yet. We will keep trying for about 48 minutes.',
+    notDelivered: 'Not delivered.',
+    uploadLimit: 'Upload limit reached',
+    uploadQuota: 'Upload quota reached',
+    storageFull: 'Storage full',
+    uploadBusy: 'Another file is still uploading. Try again in a moment.'
 };
 
 /**
@@ -73,8 +89,13 @@ function setup(routes, options = {}) {
         this.closed = false;
         this.readyState = 1;
         this.onerror = null;
-        this.addEventListener = (type, fn) => { this.listeners[type] = fn; };
-        this.close = () => { this.closed = true; this.readyState = 2; };
+        this.addEventListener = (type, fn) => {
+            this.listeners[type] = fn;
+        };
+        this.close = () => {
+            this.closed = true;
+            this.readyState = 2;
+        };
         sources.push(this);
     }
     FakeEventSource.CLOSED = 2;
@@ -84,14 +105,32 @@ function setup(routes, options = {}) {
         location,
         localStorage: {
             getItem: (k) => (k in store ? store[k] : null),
-            setItem: (k, v) => { store[k] = String(v); },
-            removeItem: (k) => { delete store[k]; },
+            setItem: (k, v) => {
+                store[k] = String(v);
+            },
+            removeItem: (k) => {
+                delete store[k];
+            }
         },
-        addEventListener: (type, fn) => { winListeners[type] = fn; },
-        setInterval: (fn, ms) => { const id = timers.next++; timers.intervals.set(id, { fn, ms }); return id; },
-        clearInterval: (id) => { timers.intervals.delete(id); },
-        setTimeout: (fn, ms) => { const id = timers.next++; timers.timeouts.set(id, { fn, ms }); return id; },
-        clearTimeout: (id) => { timers.timeouts.delete(id); },
+        addEventListener: (type, fn) => {
+            winListeners[type] = fn;
+        },
+        setInterval: (fn, ms) => {
+            const id = timers.next++;
+            timers.intervals.set(id, { fn, ms });
+            return id;
+        },
+        clearInterval: (id) => {
+            timers.intervals.delete(id);
+        },
+        setTimeout: (fn, ms) => {
+            const id = timers.next++;
+            timers.timeouts.set(id, { fn, ms });
+            return id;
+        },
+        clearTimeout: (id) => {
+            timers.timeouts.delete(id);
+        },
         EventSource: options.noEventSource ? undefined : FakeEventSource,
         fetch: async (url, init) => {
             if (!url.startsWith(REST)) {
@@ -103,54 +142,109 @@ function setup(routes, options = {}) {
             calls.push({ path: p, body, method: init.method, headers: init.headers });
             const [status, json, headers = {}] = await routes(p, body, init.method);
             return {
-                ok: status >= 200 && status < 300, status,
+                ok: status >= 200 && status < 300,
+                status,
                 headers: { get: (k) => (k in headers ? headers[k] : null) },
-                text: async () => (json === null || json === undefined ? '' : JSON.stringify(json)),
+                text: async () => (json === null || json === undefined ? '' : JSON.stringify(json))
             };
-        },
+        }
     };
     const document = {
         hidden: false,
-        addEventListener: (type, fn) => { docListeners[type] = fn; },
+        addEventListener: (type, fn) => {
+            docListeners[type] = fn;
+        },
         createElement: () => ({ click() {}, remove() {} }),
-        body: { appendChild() {} },
+        body: { appendChild() {} }
     };
     class FakeURL extends URL {
-        static createObjectURL() { return 'blob:https://shop.example/1'; }
+        static createObjectURL() {
+            return 'blob:https://shop.example/1';
+        }
         static revokeObjectURL() {}
     }
 
     let factory = null;
-    window.Alpine = { data: (name, fn) => { assert.equal(name, 'bfslcChat'); factory = fn; } };
+    window.Alpine = {
+        data: (name, fn) => {
+            assert.equal(name, 'bfslcChat');
+            factory = fn;
+        }
+    };
     // eslint-disable-next-line no-new-func
-    new Function('window', 'document', 'URL', 'FileReader', scriptBody())(window, document, FakeURL, options.FileReader);
+    new Function('window', 'document', 'URL', 'FileReader', scriptBody())(
+        window,
+        document,
+        FakeURL,
+        options.FileReader
+    );
     assert.equal(typeof factory, 'function', 'CONTROL: the script registered no component');
 
     const c = factory();
-    c.$el = { dataset: { bfslcConfig: JSON.stringify(Object.assign({
-        restRoot: REST.replace(/\/$/, options.restRootSlash === false ? '' : '/'),
-        streamUrl: 'https://shop.example/bluefairy_slc/stream/index/',
-        storeId: 1, storeCode: 'default', productId: 4, categoryId: null, cmsPageId: null,
-        uploadsEnabled: true, maxUploadBytes: 1000, allowedMimeTypes: ['image/png'], i18n: I18N,
-    }, options.config || {})) } };
+    c.$el = {
+        dataset: {
+            bfslcConfig: JSON.stringify(
+                Object.assign(
+                    {
+                        restRoot: REST.replace(/\/$/, options.restRootSlash === false ? '' : '/'),
+                        streamUrl: 'https://shop.example/bluefairy_slc/stream/index/',
+                        storeId: 1,
+                        storeCode: 'default',
+                        productId: 4,
+                        categoryId: null,
+                        cmsPageId: null,
+                        uploadsEnabled: true,
+                        maxUploadBytes: 1000,
+                        allowedMimeTypes: ['image/png'],
+                        i18n: I18N
+                    },
+                    options.config || {}
+                )
+            )
+        }
+    };
     const focused = [];
-    c.$refs = { input: { focus() { focused.push('input'); } } };
+    c.$refs = {
+        input: {
+            focus() {
+                focused.push('input');
+            }
+        }
+    };
     c.$nextTick = (fn) => fn();
     c.init();
 
     return {
-        c, store, calls, sources, fetched, timers, document, window, focused,
+        c,
+        store,
+        calls,
+        sources,
+        fetched,
+        timers,
+        document,
+        window,
+        focused,
         paths: () => calls.map((x) => x.path),
         intervalMs: () => [...timers.intervals.values()].map((x) => x.ms),
         timeoutMs: () => [...timers.timeouts.values()].map((x) => x.ms),
         fireTimeouts: async (ms) => {
             for (const [id, t] of [...timers.timeouts.entries()]) {
-                if (t.ms === ms) { timers.timeouts.delete(id); t.fn(); }
+                if (t.ms === ms) {
+                    timers.timeouts.delete(id);
+                    t.fn();
+                }
             }
             await settle();
         },
-        tick: async () => { for (const t of [...timers.intervals.values()]) t.fn(); await settle(); },
-        setHidden: async (hidden) => { document.hidden = hidden; docListeners.visibilitychange(); await settle(); },
+        tick: async () => {
+            for (const t of [...timers.intervals.values()]) t.fn();
+            await settle();
+        },
+        setHidden: async (hidden) => {
+            document.hidden = hidden;
+            docListeners.visibilitychange();
+            await settle();
+        }
     };
 }
 
@@ -160,9 +254,28 @@ async function settle() {
     }
 }
 
-const active = (token) => [200, { session_token: token, status: 'active', availability: 'online', availability_message: 'Hi' }];
-const out = (id, body, delivery = 'delivered') => ({ id, direction: 'outbound', body, author_name: 'V', delivery_status: delivery, attachment_url: null, attachment_name: null });
-const inbound = (id, body) => ({ id, direction: 'inbound', body, author_name: 'Agent', delivery_status: 'delivered', attachment_url: null, attachment_name: null });
+const active = (token) => [
+    200,
+    { session_token: token, status: 'active', availability: 'online', availability_message: 'Hi' }
+];
+const out = (id, body, delivery = 'delivered') => ({
+    id,
+    direction: 'outbound',
+    body,
+    author_name: 'V',
+    delivery_status: delivery,
+    attachment_url: null,
+    attachment_name: null
+});
+const inbound = (id, body) => ({
+    id,
+    direction: 'inbound',
+    body,
+    author_name: 'Agent',
+    delivery_status: 'delivered',
+    attachment_url: null,
+    attachment_name: null
+});
 const items = (...list) => [200, { items: list }];
 
 async function sendText(h, body) {
@@ -210,37 +323,69 @@ test('after a failed resume, a message that goes through loads the WHOLE history
     // The fake honours afterId, as the server does: asking from the sent message's
     // id would return nothing earlier.
     const transcript = [inbound(5, 'earlier reply'), out(12, 'hi')];
-    const h = setup((p, body) => (p === 'session/status' ? [0, null]
-        : p === 'message' ? [200, out(12, 'hi')]
-            : p === 'messages' ? items(...transcript.filter((m) => m.id > body.afterId)) : [500, null]), { token: TOKEN });
+    const h = setup(
+        (p, body) =>
+            p === 'session/status'
+                ? [0, null]
+                : p === 'message'
+                  ? [200, out(12, 'hi')]
+                  : p === 'messages'
+                    ? items(...transcript.filter((m) => m.id > body.afterId))
+                    : [500, null],
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     assert.equal(h.sources.length, 0, 'CONTROL: the resume failed');
     await sendText(h, 'hi');
     assert.deepEqual(h.paths(), ['session/status', 'message', 'messages']);
     assert.equal(h.calls[1].body.sessionToken, TOKEN);
-    assert.equal(h.calls[2].body.afterId, 0, 'the history was asked for after the message just sent, so the earlier transcript never appears');
+    assert.equal(
+        h.calls[2].body.afterId,
+        0,
+        'the history was asked for after the message just sent, so the earlier transcript never appears'
+    );
     assert.equal(h.sources.length, 1, 'a successful send after a failed resume never connected');
     assert.equal(h.c.hasSession, true, 'End chat stays hidden: the session was never marked active');
-    assert.deepEqual(h.c.messages.map((m) => m.body), ['earlier reply', 'hi'], 'the earlier reply is shown after the message that followed it');
-    assert.deepEqual(h.c.messages.map((m) => m.id), [5, 12]);
+    assert.deepEqual(
+        h.c.messages.map((m) => m.body),
+        ['earlier reply', 'hi'],
+        'the earlier reply is shown after the message that followed it'
+    );
+    assert.deepEqual(
+        h.c.messages.map((m) => m.id),
+        [5, 12]
+    );
 });
 
 test('a message received out of order is placed by id', async () => {
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? items(inbound(3, 'three'), inbound(9, 'nine')) : [500, null]), { token: TOKEN });
+    const h = setup(
+        (p) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'messages'
+                  ? items(inbound(3, 'three'), inbound(9, 'nine'))
+                  : [500, null],
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     const frame = (raw) => h.sources[0].listeners.message({ data: JSON.stringify(raw) });
     frame(inbound(6, 'six'));
     frame(inbound(11, 'eleven'));
-    assert.deepEqual(h.c.messages.map((m) => m.body), ['three', 'six', 'nine', 'eleven']);
+    assert.deepEqual(
+        h.c.messages.map((m) => m.body),
+        ['three', 'six', 'nine', 'eleven']
+    );
 });
 
 /* --------------------------------------------------- finding 4: End chat */
 
 test('End chat that the server refuses keeps the conversation and says so', async () => {
     let closeAnswer = [503, { message: 'down' }];
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'session/close' ? closeAnswer : items()), { token: TOKEN });
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'session/close' ? closeAnswer : items()), {
+        token: TOKEN
+    });
     h.c.open();
     await settle();
     h.c.endChat();
@@ -248,8 +393,11 @@ test('End chat that the server refuses keeps the conversation and says so', asyn
     assert.equal(h.c.token, TOKEN, 'a failed close dropped the conversation');
     assert.equal(h.store.bfslc_token_default, TOKEN);
     assert.equal(h.c.notice, 'Unavailable');
-    assert.equal(h.c.messages.filter((m) => m.body === 'This conversation has ended.').length, 0,
-        'a failed close was reported as ended');
+    assert.equal(
+        h.c.messages.filter((m) => m.body === 'This conversation has ended.').length,
+        0,
+        'a failed close was reported as ended'
+    );
     assert.equal(h.sources[0].closed, false);
 
     closeAnswer = [200, true];
@@ -260,7 +408,10 @@ test('End chat that the server refuses keeps the conversation and says so', asyn
 });
 
 test('End chat on a conversation the server already closed (410) reports it ended', async () => {
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'session/close' ? [410, { message: 'ended' }] : items()), { token: TOKEN });
+    const h = setup(
+        (p) => (p === 'session/status' ? active(TOKEN) : p === 'session/close' ? [410, { message: 'ended' }] : items()),
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     h.c.endChat();
@@ -272,7 +423,10 @@ test('End chat on a conversation the server already closed (410) reports it ende
 /* -------------------------- finding 5 + A7: polling, closed panel, hidden tab */
 
 test('the stream is open only while the panel is open and the tab visible; closed = 30 s poll', async () => {
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? items(inbound(7, 'hello')) : [500, null]), { token: TOKEN });
+    const h = setup(
+        (p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? items(inbound(7, 'hello')) : [500, null]),
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     assert.equal(h.sources.length, 1);
@@ -312,7 +466,9 @@ test('a hidden tab closes the stream and showing it again reconnects', async () 
 
 test('while closed, polling raises the unread count and the bubble label says so', async () => {
     let next = items();
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? next : [500, null]), { token: TOKEN });
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? next : [500, null]), {
+        token: TOKEN
+    });
     h.c.open();
     await settle();
     h.c.close();
@@ -350,12 +506,18 @@ test('every 10th poll checks the status, and a closed conversation is noticed', 
 test('a poll answer for a conversation that has since ended is dropped', async () => {
     let release;
     let hold = false;
-    const h = setup((p) => {
-        if (p === 'session/status') return active(TOKEN);
-        if (p === 'messages' && hold) return new Promise((r) => { release = () => r(items(inbound(50, 'stale'))); });
-        if (p === 'session/close') return [200, true];
-        return items();
-    }, { token: TOKEN });
+    const h = setup(
+        (p) => {
+            if (p === 'session/status') return active(TOKEN);
+            if (p === 'messages' && hold)
+                return new Promise((r) => {
+                    release = () => r(items(inbound(50, 'stale')));
+                });
+            if (p === 'session/close') return [200, true];
+            return items();
+        },
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     h.c.close();
@@ -367,7 +529,11 @@ test('a poll answer for a conversation that has since ended is dropped', async (
     await settle();
     release();
     await settle();
-    assert.equal(h.c.messages.filter((m) => m.body === 'stale').length, 0, 'a late answer for the old conversation was shown');
+    assert.equal(
+        h.c.messages.filter((m) => m.body === 'stale').length,
+        0,
+        'a late answer for the old conversation was shown'
+    );
     assert.equal(h.c.messages.filter((m) => m.body === 'This conversation has ended.').length, 1, 'CONTROL');
 });
 
@@ -376,7 +542,10 @@ test('a late "gone" for the old conversation does not drop its replacement', asy
     let sessions = 0;
     const h = setup((p, body) => {
         if (p === 'session') return active(++sessions === 1 ? TOKEN : 'c'.repeat(64));
-        if (p === 'message' && body.body === 'slow') return new Promise((r) => { release = () => r([410, { message: 'ended' }]); });
+        if (p === 'message' && body.body === 'slow')
+            return new Promise((r) => {
+                release = () => r([410, { message: 'ended' }]);
+            });
         if (p === 'message') return [200, out(30 + sessions, body.body)];
         return items();
     });
@@ -398,15 +567,25 @@ test('a late "gone" for the old conversation does not drop its replacement', asy
 /* ---------------------------------------------------- finding 13 bundle */
 
 test('400 bfslc_invalid_token on resume is treated as gone; another 400 is not', async () => {
-    const h = setup((p) => (p === 'session/status'
-        ? [400, { message: 'Invalid session token.', parameters: { error_code: 'bfslc_invalid_token' } }]
-        : p === 'availability/0' ? [200, { status: 'online', message: 'Hi' }] : [500, null]), { token: TOKEN });
+    const h = setup(
+        (p) =>
+            p === 'session/status'
+                ? [400, { message: 'Invalid session token.', parameters: { error_code: 'bfslc_invalid_token' } }]
+                : p === 'availability/0'
+                  ? [200, { status: 'online', message: 'Hi' }]
+                  : [500, null],
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     assert.equal('bfslc_token_default' in h.store, false);
     assert.deepEqual(h.paths(), ['session/status', 'availability/0']);
 
-    const k = setup((p) => (p === 'session/status' ? [400, { message: 'x', parameters: { error_code: 'bfslc_other' } }] : [500, null]), { token: TOKEN });
+    const k = setup(
+        (p) =>
+            p === 'session/status' ? [400, { message: 'x', parameters: { error_code: 'bfslc_other' } }] : [500, null],
+        { token: TOKEN }
+    );
     k.c.open();
     await settle();
     assert.equal(k.store.bfslc_token_default, TOKEN, 'CONTROL: an unrelated 400 does not forget the conversation');
@@ -414,13 +593,17 @@ test('400 bfslc_invalid_token on resume is treated as gone; another 400 is not',
 
 test('400 bfslc_invalid_token on a send starts a new conversation and resends once', async () => {
     let sessions = 0;
-    const h = setup((p, body) => {
-        if (p === 'session/status') return active(TOKEN);
-        if (p === 'session') return active(++sessions === 1 ? TOKEN2 : 'c'.repeat(64));
-        if (p === 'message' && body.sessionToken === TOKEN) return [400, { message: 'Invalid', parameters: { error_code: 'bfslc_invalid_token' } }];
-        if (p === 'message') return [200, out(40, body.body)];
-        return items();
-    }, { token: TOKEN });
+    const h = setup(
+        (p, body) => {
+            if (p === 'session/status') return active(TOKEN);
+            if (p === 'session') return active(++sessions === 1 ? TOKEN2 : 'c'.repeat(64));
+            if (p === 'message' && body.sessionToken === TOKEN)
+                return [400, { message: 'Invalid', parameters: { error_code: 'bfslc_invalid_token' } }];
+            if (p === 'message') return [200, out(40, body.body)];
+            return items();
+        },
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     await sendText(h, 'hello');
@@ -430,12 +613,28 @@ test('400 bfslc_invalid_token on a send starts a new conversation and resends on
 });
 
 test('an attachment URL on another origin is neither offered nor fetched with the token', async () => {
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN)
-        : p === 'messages' ? items(
-            Object.assign(inbound(1, ''), { attachment_url: 'https://evil.example/steal', attachment_name: 'evil.png' }),
-            Object.assign(inbound(2, ''), { attachment_url: 'https://shop.example/bluefairy_slc/file/download/id/2/', attachment_name: 'ok.png' }),
-            Object.assign(inbound(3, ''), { attachment_url: 'javascript:alert(1)', attachment_name: 'js.png' })
-        ) : [500, null]), { token: TOKEN });
+    const h = setup(
+        (p) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'messages'
+                  ? items(
+                        Object.assign(inbound(1, ''), {
+                            attachment_url: 'https://evil.example/steal',
+                            attachment_name: 'evil.png'
+                        }),
+                        Object.assign(inbound(2, ''), {
+                            attachment_url: 'https://shop.example/bluefairy_slc/file/download/id/2/',
+                            attachment_name: 'ok.png'
+                        }),
+                        Object.assign(inbound(3, ''), {
+                            attachment_url: 'javascript:alert(1)',
+                            attachment_name: 'js.png'
+                        })
+                    )
+                  : [500, null],
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     const [evil, ok, js] = h.c.messages;
@@ -449,7 +648,10 @@ test('an attachment URL on another origin is neither offered nor fetched with th
     h.c.message = ok;
     h.c.openAttachment();
     await settle();
-    assert.deepEqual(h.fetched.map((f) => f.url), ['https://shop.example/bluefairy_slc/file/download/id/2/']);
+    assert.deepEqual(
+        h.fetched.map((f) => f.url),
+        ['https://shop.example/bluefairy_slc/file/download/id/2/']
+    );
     assert.equal(h.fetched[0].init.headers['X-Bfslc-Token'], TOKEN);
 });
 
@@ -468,7 +670,9 @@ test('an empty file is refused in the browser and never uploaded', async () => {
 });
 
 test('the page URL sent with a new conversation has no query string and no fragment', async () => {
-    const h = setup((p, body) => (p === 'session' ? active(TOKEN) : p === 'message' ? [200, out(1, body.body)] : items()));
+    const h = setup((p, body) =>
+        p === 'session' ? active(TOKEN) : p === 'message' ? [200, out(1, body.body)] : items()
+    );
     h.c.open();
     await settle();
     await sendText(h, 'hi');
@@ -488,9 +692,20 @@ test('a restRoot without a trailing slash still reaches the right routes, with X
 /* ------------------------------------------------------- delivery wording */
 
 test('delivery states read as the server now behaves; Retry only where a resend cannot duplicate', async () => {
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN)
-        : p === 'messages' ? items(out(1, 'queued', 'pending'), Object.assign(out(2, 'stuck', 'failed'), { retrying: true }),
-            out(3, 'done', 'delivered'), Object.assign(out(5, 'lost', 'failed'), { retrying: false })) : [500, null]), { token: TOKEN });
+    const h = setup(
+        (p) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'messages'
+                  ? items(
+                        out(1, 'queued', 'pending'),
+                        Object.assign(out(2, 'stuck', 'failed'), { retrying: true }),
+                        out(3, 'done', 'delivered'),
+                        Object.assign(out(5, 'lost', 'failed'), { retrying: false })
+                    )
+                  : [500, null],
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     const [pending, retrying, done, lost] = h.c.messages;
@@ -511,9 +726,17 @@ test('delivery states read as the server now behaves; Retry only where a resend 
 });
 
 test('Retry on a message the server gave up on sends it again once, as a new message', async () => {
-    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN)
-        : p === 'messages' ? items(Object.assign(out(5, 'lost', 'failed'), { retrying: false }))
-            : p === 'message' ? [200, out(6, body.body, 'pending')] : [500, null]), { token: TOKEN });
+    const h = setup(
+        (p, body) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'messages'
+                  ? items(Object.assign(out(5, 'lost', 'failed'), { retrying: false }))
+                  : p === 'message'
+                    ? [200, out(6, body.body, 'pending')]
+                    : [500, null],
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     h.c.message = h.c.messages[0];
@@ -528,7 +751,11 @@ test('Retry on a message the server gave up on sends it again once, as a new mes
 });
 
 test('a status change re-sent over the stream redraws the message; delivered is final', async () => {
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? items(out(4, 'mine', 'pending')) : [500, null]), { token: TOKEN });
+    const h = setup(
+        (p) =>
+            p === 'session/status' ? active(TOKEN) : p === 'messages' ? items(out(4, 'mine', 'pending')) : [500, null],
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     const frame = (raw) => h.sources[0].listeners.message({ data: JSON.stringify(raw) });
@@ -545,14 +772,21 @@ test('a status change re-sent over the stream redraws the message; delivered is 
 /* -------------------------------------------------- stream endings */
 
 test('event: idle closes the stream; the open panel polls every 60 s until a send, a reopen or the tab is shown', async () => {
-    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? [200, out(9, body.body)] : items()), { token: TOKEN });
+    const h = setup(
+        (p, body) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? [200, out(9, body.body)] : items()),
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     h.sources[0].listeners.idle({});
     await settle();
     assert.equal(h.sources[0].closed, true, 'an idle stream was left open');
     assert.deepEqual(h.intervalMs(), [60000], 'D5: an idle open panel does not poll every 60 s');
-    assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [], 'an idle stream is scheduled to reconnect');
+    assert.deepEqual(
+        h.timeoutMs().filter((ms) => ms === 60000),
+        [],
+        'an idle stream is scheduled to reconnect'
+    );
     assert.equal(h.sources.length, 1);
 
     await sendText(h, 'back again');
@@ -622,12 +856,17 @@ test('upload refusals (D6): own label by code, server words for a module 4xx, st
         [400, 'bfslc_bad_mime', 'Not sent: x'],
         [400, null, 'Not sent: Oops'],
         [403, null, 'Not sent: Uploads off'],
-        [503, null, 'Not sent: Unavailable'],
+        [503, null, 'Not sent: Unavailable']
     ];
     for (const [status, code, label] of cases) {
         const body = code === null ? { message: 'x' } : { message: 'x', parameters: { error_code: code } };
         const h = setup((p) => (p === 'session' ? active(TOKEN) : p === 'upload' ? [status, body] : items()), {
-            FileReader: class { readAsDataURL() { this.result = 'data:image/png;base64,AAAA'; this.onload(); } },
+            FileReader: class {
+                readAsDataURL() {
+                    this.result = 'data:image/png;base64,AAAA';
+                    this.onload();
+                }
+            }
         });
         h.c.onFileChosen({ target: { files: [{ name: 'a.png', type: 'image/png', size: 10 }], value: 'x' } });
         await settle();
@@ -638,12 +877,15 @@ test('upload refusals (D6): own label by code, server words for a module 4xx, st
 
 test('a pending message is re-fetched every 30 s from its id until it is delivered', async () => {
     let state = 'pending';
-    const h = setup((p, body) => {
-        if (p === 'session/status') return active(TOKEN);
-        if (p === 'messages' && body.afterId === 0) return items(inbound(3, 'hi'), out(4, 'mine', 'pending'));
-        if (p === 'messages') return items(Object.assign(out(4, 'mine', state), { retrying: state === 'failed' }));
-        return [500, null];
-    }, { token: TOKEN });
+    const h = setup(
+        (p, body) => {
+            if (p === 'session/status') return active(TOKEN);
+            if (p === 'messages' && body.afterId === 0) return items(inbound(3, 'hi'), out(4, 'mine', 'pending'));
+            if (p === 'messages') return items(Object.assign(out(4, 'mine', state), { retrying: state === 'failed' }));
+            return [500, null];
+        },
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     assert.equal(h.c.messages[1].statusLabel, 'Sending to our team…');
@@ -654,7 +896,11 @@ test('a pending message is re-fetched every 30 s from its id until it is deliver
     const refetch = h.calls.filter((x) => x.path === 'messages').pop();
     assert.equal(refetch.body.afterId, 3, 'the re-fetch does not start just below the lowest unsettled id');
     assert.equal(h.c.messages[1].statusLabel, 'Not delivered yet. We will keep trying for about 48 minutes.');
-    assert.deepEqual(h.timeoutMs(), [30000], 'a failed message stopped being re-fetched while the server still retries');
+    assert.deepEqual(
+        h.timeoutMs(),
+        [30000],
+        'a failed message stopped being re-fetched while the server still retries'
+    );
 
     state = 'delivered';
     await h.fireTimeouts(30000);
@@ -663,7 +909,15 @@ test('a pending message is re-fetched every 30 s from its id until it is deliver
 });
 
 test('settling stops while the panel is closed or the tab hidden, and resumes when seen again', async () => {
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? items(Object.assign(out(4, 'mine', 'failed'), { retrying: true })) : [500, null]), { token: TOKEN });
+    const h = setup(
+        (p) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'messages'
+                  ? items(Object.assign(out(4, 'mine', 'failed'), { retrying: true }))
+                  : [500, null],
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     assert.deepEqual(h.timeoutMs(), [30000], 'CONTROL: settling is armed');
@@ -682,23 +936,44 @@ test('settling stops while the panel is closed or the tab hidden, and resumes wh
 test('a message sent more than 60 minutes ago is no longer waited on', async () => {
     const old = new Date(Date.now() - 61 * 60000).toISOString();
     const recent = new Date(Date.now() - 59 * 60000).toISOString();
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN)
-        : p === 'messages' ? items(Object.assign(out(4, 'old', 'failed'), { created_at: old, retrying: true })) : [500, null]), { token: TOKEN });
+    const h = setup(
+        (p) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'messages'
+                  ? items(Object.assign(out(4, 'old', 'failed'), { created_at: old, retrying: true }))
+                  : [500, null],
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     assert.equal(h.c.messages[0].statusLabel, 'Not delivered yet. We will keep trying for about 48 minutes.');
     assert.deepEqual(h.timeoutMs(), [], 'a 61-minute-old message is still re-fetched');
 
-    const k = setup((p) => (p === 'session/status' ? active(TOKEN)
-        : p === 'messages' ? items(Object.assign(out(4, 'recent', 'failed'), { created_at: recent, retrying: true })) : [500, null]), { token: TOKEN });
+    const k = setup(
+        (p) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'messages'
+                  ? items(Object.assign(out(4, 'recent', 'failed'), { created_at: recent, retrying: true }))
+                  : [500, null],
+        { token: TOKEN }
+    );
     k.c.open();
     await settle();
     assert.deepEqual(k.timeoutMs(), [30000], 'CONTROL: a 59-minute-old one is');
 });
 
 test('a message the server has given up on is final: no more re-fetching', async () => {
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN)
-        : p === 'messages' ? items(Object.assign(out(4, 'lost', 'failed'), { retrying: false })) : [500, null]), { token: TOKEN });
+    const h = setup(
+        (p) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'messages'
+                  ? items(Object.assign(out(4, 'lost', 'failed'), { retrying: false }))
+                  : [500, null],
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     assert.equal(h.c.messages[0].statusLabel, 'Not delivered.', 'CONTROL: the message is the given-up one');
@@ -706,8 +981,15 @@ test('a message the server has given up on is final: no more re-fetching', async
 });
 
 test('a failed message without a retrying field is taken as still retrying: no Retry, still re-fetched', async () => {
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN)
-        : p === 'messages' ? items(out(4, 'unknown', 'failed'), Object.assign(out(5, 'lost', 'failed'), { retrying: false })) : [500, null]), { token: TOKEN });
+    const h = setup(
+        (p) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'messages'
+                  ? items(out(4, 'unknown', 'failed'), Object.assign(out(5, 'lost', 'failed'), { retrying: false }))
+                  : [500, null],
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     const [unknown, lost] = h.c.messages;
@@ -727,8 +1009,8 @@ test('W2: an ended conversation forgets only its own token, not one another tab 
     h.store.bfslc_token_default = TOKEN2;
     h.sources[0].listeners.closed({});
     await settle();
-    assert.equal(h.c.token, '', 'CONTROL: this tab\'s conversation ended');
-    assert.equal(h.store.bfslc_token_default, TOKEN2, 'another tab\'s newer conversation was erased');
+    assert.equal(h.c.token, '', "CONTROL: this tab's conversation ended");
+    assert.equal(h.store.bfslc_token_default, TOKEN2, "another tab's newer conversation was erased");
 
     const k = setup((p) => (p === 'session/status' ? active(TOKEN) : items()), { token: TOKEN });
     k.c.open();
@@ -753,7 +1035,11 @@ test('W5: a reconnect after idle that an older server refuses with 204 stays on 
     h.sources[1].onerror();
     await settle();
     assert.deepEqual(h.intervalMs(), [60000], 'a 204 after idle fell back to 3 s polling');
-    assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [], 'a 204 after idle schedules a stream retry');
+    assert.deepEqual(
+        h.timeoutMs().filter((ms) => ms === 60000),
+        [],
+        'a 204 after idle schedules a stream retry'
+    );
 
     await h.setHidden(true);
     await h.setHidden(false);
@@ -763,7 +1049,10 @@ test('W5: a reconnect after idle that an older server refuses with 204 stays on 
     h.sources[2].onerror();
     await settle();
     assert.deepEqual(h.intervalMs(), [3000], 'CONTROL: a stream that opened and then failed is the 3 s fallback');
-    assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [60000]);
+    assert.deepEqual(
+        h.timeoutMs().filter((ms) => ms === 60000),
+        [60000]
+    );
 });
 
 test('D5: a reconnect answered with 200 + event: idle stays on the 60 s poll', async () => {
@@ -784,7 +1073,9 @@ test('D5: a reconnect answered with 200 + event: idle stays on the 60 s poll', a
 
 test('D5: an idle poll that finds a new message leaves idle and reopens the stream after it', async () => {
     let next = items();
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? next : [500, null]), { token: TOKEN });
+    const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'messages' ? next : [500, null]), {
+        token: TOKEN
+    });
     h.c.open();
     await settle();
     h.sources[0].listeners.idle({});
@@ -800,7 +1091,10 @@ test('D5: an idle poll that finds a new message leaves idle and reopens the stre
 });
 
 test('W6: a superseded tab takes the stream back when the visitor sends from it', async () => {
-    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? [200, out(8, body.body)] : items()), { token: TOKEN });
+    const h = setup(
+        (p, body) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? [200, out(8, body.body)] : items()),
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     h.sources[0].listeners.superseded({});
@@ -834,7 +1128,10 @@ test('reconnecting: a stream that ran is reconnected at once; one that ended at 
         await settle();
         assert.equal(h.sources.length, 2, 'a stream that expires at once is hammered');
         assert.deepEqual(h.intervalMs(), [3000]);
-        assert.deepEqual(h.timeoutMs().filter((ms) => ms === 60000), [60000]);
+        assert.deepEqual(
+            h.timeoutMs().filter((ms) => ms === 60000),
+            [60000]
+        );
     } finally {
         Date.now = realNow;
     }
@@ -845,22 +1142,46 @@ test('the stream listens for the events the server sends (StreamRunner::EVENT_*)
     h.c.open();
     await settle();
     assert.equal(h.sources.length, 1, 'CONTROL: the open panel opened a stream');
-    assert.deepEqual(Object.keys(h.sources[0].listeners).sort(), ['closed', 'idle', 'message', 'open', 'reconnecting', 'superseded']);
+    assert.deepEqual(Object.keys(h.sources[0].listeners).sort(), [
+        'closed',
+        'idle',
+        'message',
+        'open',
+        'reconnecting',
+        'superseded'
+    ]);
     assert.equal(typeof h.sources[0].listeners.reconnecting, 'function');
     assert.equal(h.sources[0].listeners.expired, undefined, 'a listener for an event the server never sends');
 });
 
-test('W3/D6: a refused email shows the server\'s words, keeps the intro fields, and Retry uses the fix', async () => {
-    const h = setup((p, body) => (p === 'availability/0' ? [200, {}]
-        : p === 'session' ? (body.email === 'jane@example.com' ? active(TOKEN)
-            : [400, { message: 'Please enter a valid email address.', parameters: { error_code: 'bfslc_invalid_email' } }])
-            : p === 'message' ? [200, out(10, body.body)] : items()));
+test("W3/D6: a refused email shows the server's words, keeps the intro fields, and Retry uses the fix", async () => {
+    const h = setup((p, body) =>
+        p === 'availability/0'
+            ? [200, {}]
+            : p === 'session'
+              ? body.email === 'jane@example.com'
+                  ? active(TOKEN)
+                  : [
+                        400,
+                        {
+                            message: 'Please enter a valid email address.',
+                            parameters: { error_code: 'bfslc_invalid_email' }
+                        }
+                    ]
+              : p === 'message'
+                ? [200, out(10, body.body)]
+                : items()
+    );
     h.c.open();
     await settle();
     h.c.email = 'jane@exämple.de';
     await sendText(h, 'hello');
     const msg = h.c.messages[0];
-    assert.equal(msg.statusLabel, 'Not sent: Please enter a valid email address.', 'a refused email reads as a generic error');
+    assert.equal(
+        msg.statusLabel,
+        'Not sent: Please enter a valid email address.',
+        'a refused email reads as a generic error'
+    );
     assert.equal(msg.canRetry, true);
     assert.equal(h.c.needsIntro, true, 'the email field went away, so it cannot be fixed');
     h.c.email = 'jane@example.com';
@@ -868,21 +1189,35 @@ test('W3/D6: a refused email shows the server\'s words, keeps the intro fields, 
     h.c.message = msg;
     h.c.retry();
     await settle();
-    assert.deepEqual(h.calls.filter((x) => x.path === 'session').map((x) => x.body.email), ['jane@exämple.de', 'jane@example.com']);
+    assert.deepEqual(
+        h.calls.filter((x) => x.path === 'session').map((x) => x.body.email),
+        ['jane@exämple.de', 'jane@example.com']
+    );
     assert.equal(h.c.messages[0].id, 10);
     assert.deepEqual(h.focused, ['input'], 'W10: Retry hid under focus and focus was not moved');
 });
 
-test('W9/D6: a refused text message - 5xx never in the server\'s words, a bare 4xx in the widget\'s, no answer is a connection problem', async () => {
+test("W9/D6: a refused text message - 5xx never in the server's words, a bare 4xx in the widget's, no answer is a connection problem", async () => {
     const cases = [
         [[500, { message: 'SQLSTATE[42S02]: Base table or view not found' }], 'Not sent: Oops'],
-        [[500, { message: 'SQLSTATE[HY000] leaked', parameters: { error_code: 'bfslc_unavailable' } }], 'Not sent: Oops'],
-        [[400, { message: '"sessionToken" is required.', parameters: { fieldName: 'sessionToken' } }], 'Not sent: Oops'],
-        [[400, { message: 'Please type a message.', parameters: { error_code: 'bfslc_empty_body' } }], 'Not sent: Please type a message.'],
-        [[0, null], 'Not sent: Offline?'],
+        [
+            [500, { message: 'SQLSTATE[HY000] leaked', parameters: { error_code: 'bfslc_unavailable' } }],
+            'Not sent: Oops'
+        ],
+        [
+            [400, { message: '"sessionToken" is required.', parameters: { fieldName: 'sessionToken' } }],
+            'Not sent: Oops'
+        ],
+        [
+            [400, { message: 'Please type a message.', parameters: { error_code: 'bfslc_empty_body' } }],
+            'Not sent: Please type a message.'
+        ],
+        [[0, null], 'Not sent: Offline?']
     ];
     for (const [answer, label] of cases) {
-        const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? answer : items()), { token: TOKEN });
+        const h = setup((p) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? answer : items()), {
+            token: TOKEN
+        });
         h.c.open();
         await settle();
         await sendText(h, 'x');
@@ -892,44 +1227,98 @@ test('W9/D6: a refused text message - 5xx never in the server\'s words, a bare 4
 });
 
 test('D6: a 410 resend says where the new conversation started, before the message', async () => {
-    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'session' ? active(TOKEN2)
-        : p === 'message' ? (body.sessionToken === TOKEN ? [410, { message: 'ended', parameters: { error_code: 'bfslc_session_closed' } }] : [200, out(20, body.body)])
-            : items(inbound(3, 'old'))), { token: TOKEN });
+    const h = setup(
+        (p, body) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'session'
+                  ? active(TOKEN2)
+                  : p === 'message'
+                    ? body.sessionToken === TOKEN
+                        ? [410, { message: 'ended', parameters: { error_code: 'bfslc_session_closed' } }]
+                        : [200, out(20, body.body)]
+                    : items(inbound(3, 'old')),
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     await sendText(h, 'again');
-    assert.deepEqual(h.c.messages.map((m) => m.body), ['old', 'Your previous conversation had ended, so this message started a new one.', 'again']);
+    assert.deepEqual(
+        h.c.messages.map((m) => m.body),
+        ['old', 'Your previous conversation had ended, so this message started a new one.', 'again']
+    );
     assert.equal(h.c.messages[1].direction, 'system');
     assert.equal(h.c.messages[2].id, 20);
     assert.equal(h.store.bfslc_token_default, TOKEN2);
 });
 
 test('W7: a message resent after a 410 still offers Retry once the server later gives up on it', async () => {
-    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'session' ? active(TOKEN2)
-        : p === 'message' ? (body.sessionToken === TOKEN ? [410, { message: 'ended' }] : [200, out(21, body.body, 'pending')])
-            : items()), { token: TOKEN });
+    const h = setup(
+        (p, body) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'session'
+                  ? active(TOKEN2)
+                  : p === 'message'
+                    ? body.sessionToken === TOKEN
+                        ? [410, { message: 'ended' }]
+                        : [200, out(21, body.body, 'pending')]
+                    : items(),
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     await sendText(h, 'again');
     const msg = h.c.messages.find((m) => m.id === 21);
     assert.ok(msg, 'CONTROL: the resend went through');
-    h.sources[h.sources.length - 1].listeners.message({ data: JSON.stringify(Object.assign(out(21, 'again', 'failed'), { retrying: false })) });
+    h.sources[h.sources.length - 1].listeners.message({
+        data: JSON.stringify(Object.assign(out(21, 'again', 'failed'), { retrying: false }))
+    });
     assert.equal(msg.statusLabel, 'Not delivered.');
     assert.equal(msg.canRetry, true, 'the 410 resend used up the Retry the docblock promises');
 });
 
 test('W13: no Retry for a refusal that cannot change; a 429 Retry-After keeps Retry disabled that long', async () => {
-    const reader = class { readAsDataURL() { this.result = 'data:image/png;base64,AAAA'; this.onload(); } };
-    const h = setup((p) => (p === 'session' ? active(TOKEN) : p === 'upload' ? [413, { message: 'x', parameters: { error_code: 'bfslc_upload_limit' } }] : items()), { FileReader: reader });
+    const reader = class {
+        readAsDataURL() {
+            this.result = 'data:image/png;base64,AAAA';
+            this.onload();
+        }
+    };
+    const h = setup(
+        (p) =>
+            p === 'session'
+                ? active(TOKEN)
+                : p === 'upload'
+                  ? [413, { message: 'x', parameters: { error_code: 'bfslc_upload_limit' } }]
+                  : items(),
+        { FileReader: reader }
+    );
     h.c.onFileChosen({ target: { files: [{ name: 'a.png', type: 'image/png', size: 10 }], value: 'x' } });
     await settle();
-    assert.equal(h.c.messages[0].statusLabel, 'Not sent: Upload limit reached', 'CONTROL: the refusal is the file limit');
-    assert.equal(h.c.messages[0].canRetry, false, 'Retry offered on the conversation\'s file limit');
+    assert.equal(
+        h.c.messages[0].statusLabel,
+        'Not sent: Upload limit reached',
+        'CONTROL: the refusal is the file limit'
+    );
+    assert.equal(h.c.messages[0].canRetry, false, "Retry offered on the conversation's file limit");
 
     let n = 0;
-    const k = setup((p, body) => (p === 'session/status' ? active(TOKEN)
-        : p === 'message' ? (++n === 1 ? [429, { message: 'Wait.', parameters: { error_code: 'bfslc_rate_limited' } }, { 'Retry-After': '30' }] : [200, out(30, body.body)])
-            : items()), { token: TOKEN });
+    const k = setup(
+        (p, body) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'message'
+                  ? ++n === 1
+                      ? [
+                            429,
+                            { message: 'Wait.', parameters: { error_code: 'bfslc_rate_limited' } },
+                            { 'Retry-After': '30' }
+                        ]
+                      : [200, out(30, body.body)]
+                  : items(),
+        { token: TOKEN }
+    );
     k.c.open();
     await settle();
     await sendText(k, 'x');
@@ -940,7 +1329,10 @@ test('W13: no Retry for a refusal that cannot change; a 429 Retry-After keeps Re
     k.c.retry();
     await settle();
     assert.equal(k.calls.filter((x) => x.path === 'message').length, 1, 'a waiting Retry sent');
-    assert.deepEqual(k.timeoutMs().filter((ms) => ms === 30000), [30000]);
+    assert.deepEqual(
+        k.timeoutMs().filter((ms) => ms === 30000),
+        [30000]
+    );
     await k.fireTimeouts(30000);
     assert.equal(msg.retryWaiting, false);
     k.c.retry();
@@ -949,8 +1341,17 @@ test('W13: no Retry for a refusal that cannot change; a 429 Retry-After keeps Re
 });
 
 test('W10: sending moves focus back to the message box; End chat too once it hides', async () => {
-    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'message' ? [200, out(5, body.body)]
-        : p === 'session/close' ? [200, true] : items()), { token: TOKEN });
+    const h = setup(
+        (p, body) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'message'
+                  ? [200, out(5, body.body)]
+                  : p === 'session/close'
+                    ? [200, true]
+                    : items(),
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     h.focused.length = 0;
@@ -965,8 +1366,17 @@ test('W10: sending moves focus back to the message box; End chat too once it hid
 
 test('W10: the log is aria-busy while the transcript loads', async () => {
     let release;
-    const h = setup((p) => (p === 'session/status' ? active(TOKEN)
-        : p === 'messages' ? new Promise((r) => { release = () => r(items(inbound(1, 'hi'))); }) : [500, null]), { token: TOKEN });
+    const h = setup(
+        (p) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'messages'
+                  ? new Promise((r) => {
+                        release = () => r(items(inbound(1, 'hi')));
+                    })
+                  : [500, null],
+        { token: TOKEN }
+    );
     assert.equal(h.c.logBusy, 'false');
     h.c.open();
     await settle();
@@ -979,8 +1389,21 @@ test('W10: the log is aria-busy while the transcript loads', async () => {
 });
 
 test('an upload type is compared case-insensitively, as Luma does', async () => {
-    const reader = class { readAsDataURL() { this.result = 'data:image/png;base64,AAAA'; this.onload(); } };
-    const h = setup((p, body) => (p === 'session' ? active(TOKEN) : p === 'upload' ? [200, Object.assign(out(3, ''), { attachment_name: 'A.PNG' })] : items()), { FileReader: reader });
+    const reader = class {
+        readAsDataURL() {
+            this.result = 'data:image/png;base64,AAAA';
+            this.onload();
+        }
+    };
+    const h = setup(
+        (p, body) =>
+            p === 'session'
+                ? active(TOKEN)
+                : p === 'upload'
+                  ? [200, Object.assign(out(3, ''), { attachment_name: 'A.PNG' })]
+                  : items(),
+        { FileReader: reader }
+    );
     h.c.onFileChosen({ target: { files: [{ name: 'A.PNG', type: 'IMAGE/PNG', size: 10 }], value: 'x' } });
     await settle();
     assert.equal(h.c.notice, '', 'an upper-case type was refused');
@@ -990,10 +1413,25 @@ test('an upload type is compared case-insensitively, as Luma does', async () => 
 /* -------------------------------- download token, upload lock refusal */
 
 test('Download uses the token of the conversation the message came from, after End chat and after a new one', async () => {
-    const file = Object.assign(inbound(2, ''), { attachment_url: 'https://shop.example/bluefairy_slc/file/download/id/2/', attachment_name: 'ok.png' });
-    const h = setup((p, body) => (p === 'session/status' ? active(TOKEN) : p === 'session/close' ? [200, true]
-        : p === 'session' ? active(TOKEN2) : p === 'message' ? [200, out(30, body.body)]
-            : p === 'messages' ? items(file) : [500, null]), { token: TOKEN });
+    const file = Object.assign(inbound(2, ''), {
+        attachment_url: 'https://shop.example/bluefairy_slc/file/download/id/2/',
+        attachment_name: 'ok.png'
+    });
+    const h = setup(
+        (p, body) =>
+            p === 'session/status'
+                ? active(TOKEN)
+                : p === 'session/close'
+                  ? [200, true]
+                  : p === 'session'
+                    ? active(TOKEN2)
+                    : p === 'message'
+                      ? [200, out(30, body.body)]
+                      : p === 'messages'
+                        ? items(file)
+                        : [500, null],
+        { token: TOKEN }
+    );
     h.c.open();
     await settle();
     const msg = h.c.messages[0];
@@ -1006,23 +1444,43 @@ test('Download uses the token of the conversation the message came from, after E
     h.c.message = msg;
     h.c.openAttachment();
     await settle();
-    assert.deepEqual(h.fetched.map((f) => f.init.headers['X-Bfslc-Token']), [TOKEN], 'Download after End chat did nothing');
+    assert.deepEqual(
+        h.fetched.map((f) => f.init.headers['X-Bfslc-Token']),
+        [TOKEN],
+        'Download after End chat did nothing'
+    );
 
     await sendText(h, 'new one');
     assert.equal(h.c.token, TOKEN2, 'CONTROL: a new conversation started');
     h.c.message = msg;
     h.c.openAttachment();
     await settle();
-    assert.deepEqual(h.fetched.map((f) => f.init.headers['X-Bfslc-Token']), [TOKEN, TOKEN], 'the old file was asked for with the new conversation\'s token');
+    assert.deepEqual(
+        h.fetched.map((f) => f.init.headers['X-Bfslc-Token']),
+        [TOKEN, TOKEN],
+        "the old file was asked for with the new conversation's token"
+    );
     assert.equal(h.c.notice, '');
     const sent = h.c.messages.find((m) => m.id === 30);
     assert.equal(sent.token, TOKEN2, 'a message confirmed by a send does not carry the token it was sent with');
 });
 
 test('an upload refused because another file is still uploading has its own words and keeps Retry', async () => {
-    const reader = class { readAsDataURL() { this.result = 'data:image/png;base64,AAAA'; this.onload(); } };
-    const h = setup((p) => (p === 'session' ? active(TOKEN)
-        : p === 'upload' ? [429, { message: 'server words', parameters: { error_code: 'bfslc_upload_busy' } }] : items()), { FileReader: reader });
+    const reader = class {
+        readAsDataURL() {
+            this.result = 'data:image/png;base64,AAAA';
+            this.onload();
+        }
+    };
+    const h = setup(
+        (p) =>
+            p === 'session'
+                ? active(TOKEN)
+                : p === 'upload'
+                  ? [429, { message: 'server words', parameters: { error_code: 'bfslc_upload_busy' } }]
+                  : items(),
+        { FileReader: reader }
+    );
     h.c.onFileChosen({ target: { files: [{ name: 'a.png', type: 'image/png', size: 10 }], value: 'x' } });
     await settle();
     assert.equal(h.c.messages[0].statusLabel, 'Not sent: Another file is still uploading. Try again in a moment.');
